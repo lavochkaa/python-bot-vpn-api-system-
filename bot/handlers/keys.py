@@ -25,10 +25,10 @@ APP_TITLES = {
 def _normalize_subscription_link(key: str, user_id: int) -> str:
     if not key.startswith(("http://", "https://")):
         return key
+    parts = urlsplit(key)
     profile = (settings.hiddify_profile_name or "CRYSTAL VPN").strip()
     profile_slug = re.sub(r"[^A-Za-z0-9]+", "-", profile).strip("-") or "CRYSTAL-VPN"
     fragment = profile_slug
-    parts = urlsplit(key)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, quote(fragment)))
 
 

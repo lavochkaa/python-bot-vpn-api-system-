@@ -5,6 +5,7 @@ Flask приложение для объединения подписок с н�
 import os
 import base64
 import requests
+import re
 from urllib.parse import quote
 from flask import Flask, request, Response, redirect
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Float, text
@@ -17,6 +18,7 @@ app = Flask(__name__)
 SUB_DOMAIN = os.getenv('SUB_DOMAIN', 'https://your-domain.com')
 VPN_BRAND_NAME = os.getenv('VPN_BRAND_NAME', 'VPN')
 VPN_SUPPORT_BOT = os.getenv('VPN_SUPPORT_BOT', 'support')
+SUB_COMBINER_PORT = int(os.getenv('SUB_COMBINER_PORT', '5000'))
 
 # База данных (та же что и у бота)
 Base = declarative_base()
@@ -211,24 +213,74 @@ def modify_config_name(config: str, server_name: str = None) -> str:
 def fetch_subscription_configs(subscription_url: str, server_name: str = None) -> list:
     """Загружает конфигурации с URL подписки"""
     configs = []
-    try:
-        response = requests.get(subscription_url, timeout=10, verify=False)
-        if response.status_code == 200:
+    user_agents = (
+        "hiddify-next",
+        "clash-meta",
+        "v2rayN",
+        "Streisand",
+        "CrystalVPNCombiner/1.0",
+    )
+    url_variants = [
+        subscription_url,
+        f"{subscription_url}{'&' if '?' in subscription_url else '?'}sub=1",
+        f"{subscription_url}{'&' if '?' in subscription_url else '?'}base64=1",
+        f"{subscription_url}{'&' if '?' in subscription_url else '?'}raw=1",
+    ]
+
+    def _is_config_line(line: str) -> bool:
+        return line.startswith(("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hy2://", "tuic://"))
+
+    def _decode_base64_payload(payload: str) -> str | None:
+        compact = re.sub(r"\s+", "", payload)
+        if not compact:
+            return None
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
             try:
-                # Пробуем декодировать base64
-                decoded = base64.b64decode(response.text).decode('utf-8')
-                for line in decoded.split('\n'):
-                    if line.strip():
-                        modified_line = modify_config_name(line.strip(), server_name)
-                        configs.append(modified_line)
-            except:
-                # Если не base64, добавляем как есть
-                for line in response.text.split('\n'):
-                    if line.strip():
-                        modified_line = modify_config_name(line.strip(), server_name)
-                        configs.append(modified_line)
-    except Exception as e:
-        print(f"Error fetching subscription from {subscription_url}: {e}")
+                padded = compact + "=" * (-len(compact) % 4)
+                decoded = decoder(padded.encode("utf-8")).decode("utf-8", errors="ignore")
+                if "://" in decoded:
+                    return decoded
+            except Exception:
+                continue
+        return None
+
+    for url in url_variants:
+        for ua in user_agents:
+            try:
+                response = requests.get(
+                    url,
+                    timeout=12,
+                    verify=False,
+                    headers={
+                        "User-Agent": ua,
+                        "Accept": "text/plain,application/json,*/*",
+                    },
+                )
+                if response.status_code >= 400:
+                    continue
+                body = response.text.strip()
+                if not body:
+                    continue
+                if "<html" in body.lower():
+                    continue
+
+                lines = [line.strip() for line in body.split('\n') if line.strip()]
+                raw_configs = [line for line in lines if _is_config_line(line)]
+                if not raw_configs:
+                    decoded = _decode_base64_payload(body)
+                    if not decoded:
+                        continue
+                    decoded_lines = [line.strip() for line in decoded.split('\n') if line.strip()]
+                    raw_configs = [line for line in decoded_lines if _is_config_line(line)]
+
+                for line in raw_configs:
+                    modified_line = modify_config_name(line, server_name)
+                    configs.append(modified_line)
+                if configs:
+                    return configs
+            except Exception as e:
+                print(f"Error fetching subscription from {url} ua={ua}: {e}")
+                continue
     return configs
 
 
@@ -1297,4 +1349,4 @@ if __name__ == '__main__':
     warnings.filterwarnings('ignore')
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=SUB_COMBINER_PORT, debug=False)

@@ -103,7 +103,7 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
             if not key:
                 raise ValueError("Hiddify user created, but key/subscription URL not found in response.")
             if key.startswith(("http://", "https://")):
-                combiner_key = self._build_combiner_subscription_url(key)
+                combiner_key = await self._build_combiner_subscription_url(session, key)
                 if combiner_key:
                     return VpnKeyData(key=combiner_key, meta={"provider": "hiddify", "raw": result})
             # Prefer "cleaned + rebuilt" subscription from provider payload.
@@ -685,7 +685,11 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
         # Force custom profile title even if provider returned fragment with IP.
         return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, quote(fragment)))
 
-    def _build_combiner_subscription_url(self, source_url: str) -> str | None:
+    async def _build_combiner_subscription_url(
+        self,
+        session: aiohttp.ClientSession,
+        source_url: str,
+    ) -> str | None:
         base = (settings.sub_combiner_base_url or settings.sub_domain or "").strip().rstrip("/")
         if not base:
             logger.warning(
