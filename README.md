@@ -8,6 +8,83 @@ Telegram-бот для продажи VPN-подписок и управлени
 - Alembic для миграций
 - pydantic-settings для конфига
 
+## Быстрый запуск на сервере (copy-paste)
+
+Ниже команды для Ubuntu 22.04/24.04. Выполняй по порядку.
+
+### 1) Первый деплой
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip postgresql postgresql-contrib
+
+sudo -u postgres psql -c "CREATE USER vpnbot WITH PASSWORD 'secret';" || true
+sudo -u postgres psql -c "CREATE DATABASE vpnbot OWNER vpnbot;" || true
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE vpnbot TO vpnbot;" || true
+
+mkdir -p ~/apps && cd ~/apps
+git clone https://github.com/lavochkaa/vpn-bot-for-roma.git vpn-bot
+cd vpn-bot
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+cp .env.example .env
+echo "Открой .env и заполни BOT_TOKEN + остальные переменные"
+nano .env
+
+alembic upgrade head
+python3 -m bot.main
+```
+
+### 2) Автозапуск через systemd
+
+```bash
+sudo tee /etc/systemd/system/vpn-bot.service >/dev/null <<'EOF'
+[Unit]
+Description=VPN Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/apps/vpn-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/YOUR_USER/apps/vpn-bot/.venv/bin/python3 -m bot.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable vpn-bot.service
+sudo systemctl start vpn-bot.service
+sudo systemctl status vpn-bot.service --no-pager
+```
+
+Если сервис не стартовал, смотри логи:
+
+```bash
+journalctl -u vpn-bot.service -n 200 --no-pager
+journalctl -u vpn-bot.service -f
+```
+
+### 3) Обновление на сервере
+
+```bash
+cd ~/apps/vpn-bot
+git pull origin main
+source .venv/bin/activate
+pip install -r requirements.txt
+alembic upgrade head
+sudo systemctl restart vpn-bot.service
+sudo systemctl status vpn-bot.service --no-pager
+```
+
 ## Запуск (dev, PostgreSQL)
 
 ```bash
@@ -40,9 +117,8 @@ docker-compose up --build
 Чтобы бот автоматически выдавал ссылку через combiner после оплаты, укажите в `.env`:
 
 ```env
-SUB_COMBINER_BASE_URL=https://your-domain.com
-# или как минимум
 SUB_DOMAIN=https://your-domain.com
+SUB_COMBINER_PORT=5000
 ```
 
 ## Миграции
@@ -75,15 +151,6 @@ models.py     — ORM-модели
 - ✅ Система поддержки с номером тикета
 - ✅ Раздел "в разработке"
 
-## TODO для завершения (Codex)
-
-- [ ] `PaymentService.confirm_payment`: найти платёж по invoice_id, обновить статус, пополнить баланс
-- [ ] Реальный `PaymentProvider` (Telegram Payments / YooKassa / Cryptomus)
-- [ ] Реальный `VpnKeyProvider` (Outline API / 3x-ui API)
-- [ ] Admin-панель: управление промокодами, тарифами, тикетами
-- [ ] Webhook-режим вместо polling для продакшена
-- [ ] Тесты (pytest + pytest-asyncio)
-
 ## VPN API Integration
 
 ```env
@@ -99,83 +166,15 @@ Expected endpoints:
 - `POST /subscriptions/{id}/extend` -> extend subscription
 - `GET /subscriptions/{id}` -> read subscription
 
-## Практические Подсказки (Для Себя)
+## Частые проблемы
 
 - Если `docker-compose` не найден: используй `docker compose ...` (без дефиса) или запускай локально без Docker.
 - Если `TelegramConflictError`: запущено несколько экземпляров бота. Заверши все процессы и оставь один.
-- Если `Port 5000 is in use`: запусти `sub_combiner` на другом порту (например `5001`) и обнови `SUB_COMBINER_BASE_URL`.
+- Если `Port 5000 is in use`: запусти `sub_combiner` на другом порту (например `5001`) и обнови `SUB_COMBINER_PORT`.
 - Для переработки подписки через combiner в `.env` обязательно:
   - `VPN_PROVIDER=hiddify`
-  - `SUB_COMBINER_BASE_URL=https://<домен-или-ip>`
   - `SUB_DOMAIN=https://<домен-или-ip>`
+  - `SUB_COMBINER_PORT=5000`
 - Если ссылка из бота не меняется:
   - проверь, что `sub_combiner.py` реально запущен и доступен по URL;
   - проверь, что бот перезапущен после изменения `.env`.
-
-## Что Доделать
-
-- [ ] Привести `sub_combiner.py` к текущей БД проекта (сейчас в нем legacy-модели из другого проекта).
-- [ ] Добавить нормальный health-check и логирование причин fallback в `HiddifyVpnKeyProvider`.
-- [ ] Добавить интеграционные тесты на флоу покупки и выдачи ссылки.
-- [ ] Убрать дублирующиеся/устаревшие сценарии подключения и оставить один основной.
-- [ ] Добавить команду админа для проверки текущей конфигурации env (без секретов).
-
-## Команды Для Commit + Push В main
-
-```bash
-git add .
-git commit -m "Add sub combiner integration, subscription link flow fixes, and README operational notes"
-git push origin main
-```
-Ты — senior Python dev. Твоя задача: внести изменения в МОЙ существующий проект Telegram-бота (не переписывать с нуля).
-
-Контекст:
-- В проекте есть Flask-сервис sub_combiner.py, который показывает страницу профиля подписки по эндпоинту:
-  GET {SUB_DOMAIN}/user/<token>
-  где token = users.subscription_token из SQLite vpn_bot.db (таблица users).
-- Внутри user_page есть проверка "это Telegram?" и обход через query параметр tg=1.
-  Поэтому ссылку из бота нужно формировать как:
-  PROFILE_URL = f"{SUB_DOMAIN}/user/{user.subscription_token}?tg=1"
-
-Что нужно сделать:
-1) Найти в коде бота место, где подписка пользователя “изменилась”:
-   - успешная оплата
-   - продление / активация / смена плана
-   - выдача/обновление subscription_url, uuid, UserServer и т.п.
-   (это может быть handler оплаты, callback “оплатить”, postback от платежки, админская команда и т.д.)
-
-2) После того как изменения подписки успешно применены (после commit транзакции/БД):
-   - гарантировать, что у пользователя есть users.subscription_token
-     - если None/пустой: сгенерировать безопасный токен (secrets.token_urlsafe(32)) и сохранить
-   - сформировать ссылку на профиль:
-     PROFILE_URL = f"{SUB_DOMAIN}/user/{user.subscription_token}?tg=1"
-   - отправить пользователю сообщение в Telegram с этой ссылкой
-     Текст: “Профиль подписки обновлён. Откройте профиль: <ссылка>”
-     + InlineKeyboard с кнопкой:
-       - “Открыть профиль подписки” -> URL = PROFILE_URL
-     Дополнительно (если уместно) можно добавить кнопки:
-       - “Подключить в Hiddify” -> f"{SUB_DOMAIN}/connect/{token}"
-       - “Подключить в HAPP” -> f"{SUB_DOMAIN}/happ/{token}"
-     но главное — ссылка на /user/<token>?tg=1.
-
-3) Конфиг:
-   - SUB_DOMAIN должен браться из env так же, как в sub_combiner.py (по умолчанию https://your-domain.com)
-   - не хардкодить домен в нескольких местах: вынести в config/const как принято в проекте.
-
-4) Надёжность:
-   - отправку ссылки делать ТОЛЬКО если изменения подписки прошли успешно
-   - при ошибке API/БД: не отправлять “успешно”, а показывать ошибку
-   - если бот асинхронный: убедиться, что commit выполнен до отправки сообщения
-
-5) Результат:
-   - Выдай список файлов, которые меняешь
-   - Дай конкретный дифф/патч или полный обновлённый код изменённых файлов
-   - Опиши как протестировать:
-     1) создать/обновить подписку
-     2) получить сообщение со ссылкой
-     3) открыть ссылку и убедиться, что страница профиля открывается (tg=1)
-
-Важно:
-- Не переписывай архитектуру.
-- Следуй текущим библиотекам проекта (aiogram/pyTelegramBotAPI/etc).
-- Не добавляй лишние зависимости без необходимости.

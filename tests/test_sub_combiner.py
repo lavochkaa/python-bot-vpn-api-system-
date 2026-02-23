@@ -21,15 +21,10 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from bot.utils.sub_combiner import (
-    TEMPLATE_NORMAL,
-    TEMPLATE_NUMBERED,
-    TEMPLATE_BYPASS,
     _detect_country,
     _detect_protocol,
     _is_bypass,
     _config_fingerprint,
-    _get_config_remark,
-    _get_config_host,
     _set_config_name,
     parse_subscription_payload,
     build_subscription_payload,

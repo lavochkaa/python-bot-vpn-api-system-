@@ -7,8 +7,8 @@ import base64
 import requests
 import re
 from urllib.parse import quote
-from flask import Flask, request, Response, redirect
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Float, Text, text
+from flask import Flask, request, Response
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 
