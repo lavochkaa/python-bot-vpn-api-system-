@@ -10,11 +10,19 @@ def subscription_menu_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def subscription_active_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔄 Изменить подписку", callback_data="subscription:change")
+    builder.button(text="🔙 Назад", callback_data="menu:main")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def duration_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="30 дней", callback_data="subscription:duration:30")
-    builder.button(text="6 месяцев", callback_data="subscription:duration:180")
-    builder.button(text="1 год", callback_data="subscription:duration:365")
+    builder.button(text="1 месяц", callback_data="subscription:duration:30")
+    builder.button(text="2 месяца", callback_data="subscription:duration:60")
+    builder.button(text="12 месяцев", callback_data="subscription:duration:365")
     builder.button(text="🔙 Назад", callback_data="menu:subscription")
     builder.adjust(1)
     return builder.as_markup()
@@ -22,8 +30,8 @@ def duration_keyboard() -> InlineKeyboardMarkup:
 
 def plan_type_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="VPN обход", callback_data="subscription:type:vpn")
-    builder.button(text="VPN + обход", callback_data="subscription:type:vpn_bypass")
+    builder.button(text="📱 Обход + VPN (телефон)", callback_data="subscription:type:phone")
+    builder.button(text="💻 VPN (ПК)", callback_data="subscription:type:pc")
     builder.button(text="🔙 К сроку", callback_data="subscription:change")
     builder.adjust(1)
     return builder.as_markup()
@@ -31,30 +39,26 @@ def plan_type_keyboard() -> InlineKeyboardMarkup:
 
 def traffic_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="100 ГБ", callback_data="subscription:traffic:100")
-    builder.button(text="300 ГБ", callback_data="subscription:traffic:300")
-    builder.button(text="Безлимит", callback_data="subscription:traffic:unlimited")
-    builder.button(text="🔙 К типу", callback_data="subscription:type:back")
+    builder.button(text="50 ГБ", callback_data="subscription:traffic:50")
+    builder.button(text="150 ГБ", callback_data="subscription:traffic:150")
+    builder.button(text="500 ГБ", callback_data="subscription:traffic:500")
+    builder.button(text="🔙 К сроку", callback_data="subscription:duration:back")
     builder.adjust(1)
     return builder.as_markup()
 
 
-def devices_keyboard() -> InlineKeyboardMarkup:
+def subscription_confirm_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="2 устройства", callback_data="subscription:devices:2")
-    builder.button(text="4 устройства", callback_data="subscription:devices:4")
-    builder.button(text="10 устройств", callback_data="subscription:devices:10")
-    builder.button(text="Неограниченно", callback_data="subscription:devices:unlimited")
+    builder.button(text="✅ Оплатить с баланса", callback_data="subscription:pay_balance")
     builder.button(text="🔙 К трафику", callback_data="subscription:traffic:back")
     builder.adjust(1)
     return builder.as_markup()
 
 
-def subscription_promo_keyboard() -> InlineKeyboardMarkup:
+def promo_retry_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🎟 Ввести промокод", callback_data="subscription:promo")
-    builder.button(text="➡️ Без промокода", callback_data="subscription:skip_promo")
-    builder.button(text="🔙 К устройствам", callback_data="subscription:devices:back")
+    builder.button(text="🔁 Повторить попытку", callback_data="subscription:promo:retry")
+    builder.button(text="🔙 Назад", callback_data="subscription:promo:back")
     builder.adjust(1)
     return builder.as_markup()
 

@@ -27,6 +27,7 @@ class PaymentKind(str, enum.Enum):
 
 class TicketStatus(str, enum.Enum):
     open = "open"
+    pending = "pending"
     closed = "closed"
 
 
@@ -73,6 +74,15 @@ class Subscription(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plan_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    traffic_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    build_preset: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_subscription_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # TODO(cleanup): a legacy "devices" concept was removed from subscription constructor.
 
     user: Mapped["User"] = relationship(back_populates="subscriptions")
     plan: Mapped["Plan"] = relationship()
@@ -158,8 +168,30 @@ class SupportTicket(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
     text: Mapped[str] = mapped_column(Text)
     status: Mapped[TicketStatus] = mapped_column(PgEnum(TicketStatus, name="ticketstatus"), default=TicketStatus.open)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
     user: Mapped["User"] = relationship(back_populates="tickets")
+    messages: Mapped[list["TicketMessage"]] = relationship(back_populates="ticket")
+
+
+class TicketSenderRole(str, enum.Enum):
+    user = "user"
+    admin = "admin"
+
+
+class TicketMessage(Base):
+    __tablename__ = "ticket_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticket_id: Mapped[int] = mapped_column(ForeignKey("support_tickets.id"))
+    sender_role: Mapped[TicketSenderRole] = mapped_column(PgEnum(TicketSenderRole, name="ticketsenderrole"))
+    message_text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    ticket: Mapped["SupportTicket"] = relationship(back_populates="messages")

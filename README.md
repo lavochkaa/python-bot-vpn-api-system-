@@ -15,7 +15,7 @@ cp .env.example .env
 # Заполни BOT_TOKEN, VPN_CHANNEL_ID/USERNAME, PAYMENT_PROVIDER_TOKEN
 pip install -r requirements.txt
 alembic upgrade head
-python -m bot.main
+python3 -m bot.main
 ```
 
 ## Запуск через Docker
@@ -24,6 +24,25 @@ python -m bot.main
 cp .env.example .env
 # Заполни BOT_TOKEN, VPN_CHANNEL_ID/USERNAME, PAYMENT_PROVIDER_TOKEN в .env
 docker-compose up --build
+```
+
+## Sub Combiner (отдельный сервис)
+
+В проект импортирован полный `sub_combiner.py` (Flask-сервис для объединения/модификации подписок).
+
+Запуск вместе с ботом через Docker:
+
+```bash
+docker-compose up --build
+```
+
+Сервис доступен на `http://localhost:5000`.
+Чтобы бот автоматически выдавал ссылку через combiner после оплаты, укажите в `.env`:
+
+```env
+SUB_COMBINER_BASE_URL=https://your-domain.com
+# или как минимум
+SUB_DOMAIN=https://your-domain.com
 ```
 
 ## Миграции
@@ -64,3 +83,47 @@ models.py     — ORM-модели
 - [ ] Admin-панель: управление промокодами, тарифами, тикетами
 - [ ] Webhook-режим вместо polling для продакшена
 - [ ] Тесты (pytest + pytest-asyncio)
+
+## VPN API Integration
+
+```env
+VPN_PROVIDER=api
+VPN_API_BASE_URL=https://vpn-provider.example/api
+VPN_API_KEY=your_api_key
+VPN_API_TIMEOUT_SECONDS=20
+VPN_API_VERIFY_SSL=true
+```
+
+Expected endpoints:
+- `POST /subscriptions` -> create subscription
+- `POST /subscriptions/{id}/extend` -> extend subscription
+- `GET /subscriptions/{id}` -> read subscription
+
+## Практические Подсказки (Для Себя)
+
+- Если `docker-compose` не найден: используй `docker compose ...` (без дефиса) или запускай локально без Docker.
+- Если `TelegramConflictError`: запущено несколько экземпляров бота. Заверши все процессы и оставь один.
+- Если `Port 5000 is in use`: запусти `sub_combiner` на другом порту (например `5001`) и обнови `SUB_COMBINER_BASE_URL`.
+- Для переработки подписки через combiner в `.env` обязательно:
+  - `VPN_PROVIDER=hiddify`
+  - `SUB_COMBINER_BASE_URL=https://<домен-или-ip>`
+  - `SUB_DOMAIN=https://<домен-или-ip>`
+- Если ссылка из бота не меняется:
+  - проверь, что `sub_combiner.py` реально запущен и доступен по URL;
+  - проверь, что бот перезапущен после изменения `.env`.
+
+## Что Доделать
+
+- [ ] Привести `sub_combiner.py` к текущей БД проекта (сейчас в нем legacy-модели из другого проекта).
+- [ ] Добавить нормальный health-check и логирование причин fallback в `HiddifyVpnKeyProvider`.
+- [ ] Добавить интеграционные тесты на флоу покупки и выдачи ссылки.
+- [ ] Убрать дублирующиеся/устаревшие сценарии подключения и оставить один основной.
+- [ ] Добавить команду админа для проверки текущей конфигурации env (без секретов).
+
+## Команды Для Commit + Push В main
+
+```bash
+git add .
+git commit -m "Add sub combiner integration, subscription link flow fixes, and README operational notes"
+git push origin main
+```

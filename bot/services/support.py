@@ -8,5 +8,4 @@ class SupportService:
 
     async def create_ticket(self, user_id: int, text: str) -> SupportTicket:
         """Create a new support ticket and return it (with assigned id)."""
-        ticket = SupportTicket(user_id=user_id, text=text)
-        return await self.repo.save(ticket)
+        return await self.repo.create_ticket(user_id=user_id, text=text)

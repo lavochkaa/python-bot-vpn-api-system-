@@ -4,9 +4,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="💳 Баланс и пополнение", callback_data="menu:balance")
+    builder.button(text="🔌 Подключиться", callback_data="menu:connect")
+    builder.button(text="💳 Баланс", callback_data="menu:balance")
     builder.button(text="📦 Подписка", callback_data="menu:subscription")
-    builder.button(text="🔑 Мои ключи", callback_data="menu:keys")
     builder.button(text="ℹ️ Информация", callback_data="menu:info")
     builder.button(text="🆘 Поддержка", callback_data="menu:support")
     builder.adjust(1, 2, 2)

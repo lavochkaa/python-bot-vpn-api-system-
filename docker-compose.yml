@@ -18,5 +18,14 @@ services:
       - db
     command: python -m bot.main
 
+  combiner:
+    build: .
+    env_file: .env
+    depends_on:
+      - db
+    command: python sub_combiner.py
+    ports:
+      - "5000:5000"
+
 volumes:
   pgdata:

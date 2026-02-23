@@ -16,3 +16,13 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             .options(selectinload(Subscription.plan))
         )
         return result.scalar_one_or_none()
+
+    async def get_latest(self, user_id: int) -> Subscription | None:
+        result = await self.session.execute(
+            select(Subscription)
+            .where(Subscription.user_id == user_id)
+            .order_by(Subscription.id.desc())
+            .limit(1)
+            .options(selectinload(Subscription.plan))
+        )
+        return result.scalar_one_or_none()
