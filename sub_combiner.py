@@ -8,7 +8,7 @@ import requests
 import re
 from urllib.parse import quote
 from flask import Flask, request, Response, redirect
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Float, text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Float, Text, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
 
@@ -22,28 +22,26 @@ SUB_COMBINER_PORT = int(os.getenv('SUB_COMBINER_PORT', '5000'))
 
 # База данных (та же что и у бота)
 Base = declarative_base()
-engine = create_engine('sqlite:///vpn_bot.db')
+
+
+def _sync_db_url() -> str:
+    raw = (os.getenv("DATABASE_URL") or "").strip()
+    if not raw:
+        return "sqlite:///vpn_bot.db"
+    if raw.startswith("postgresql+asyncpg://"):
+        return raw.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    return raw
+
+
+engine = create_engine(_sync_db_url())
 Session = sessionmaker(bind=engine)
 
 # Используем те же модели что и в основном боте
 class User(Base):
     __tablename__ = 'users'
-    
+
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False)
-    username = Column(String)
-    hiddify_uuid = Column(String)
-    subscription_url = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=True)
-    pending_payment = Column(String)
-    pending_plan = Column(String)
-    referrer_id = Column(Integer)
-    referral_code = Column(String, unique=True)
     subscription_token = Column(String, unique=True)
-    referral_type = Column(String, default='percent')
-    referral_balance = Column(Float, default=0.0)
-    referral_count = Column(Integer, default=0)
 
 class Server(Base):
     __tablename__ = 'servers'
@@ -68,18 +66,31 @@ class UserServer(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class VpnKey(Base):
+    __tablename__ = "vpn_keys"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    key = Column(Text, nullable=False)
+    issued_at = Column(DateTime, default=datetime.utcnow)
+    status = Column(String, default="active")
+
+
 def _migrate_add_subscription_token():
     try:
         with engine.begin() as conn:
-            cols = conn.execute(text("PRAGMA table_info(users)")).fetchall()
-            if not cols:
-                return
-            col_names = {c[1] for c in cols}
-            if 'subscription_token' not in col_names:
-                conn.execute(text("ALTER TABLE users ADD COLUMN subscription_token VARCHAR"))
+            dialect = conn.dialect.name
+            if dialect == "sqlite":
+                cols = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+                if cols:
+                    col_names = {c[1] for c in cols}
+                    if 'subscription_token' not in col_names:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN subscription_token VARCHAR"))
+            elif dialect == "postgresql":
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_token VARCHAR"))
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_subscription_token ON users (subscription_token)"))
     except Exception as e:
         print(f"DB migration failed (add subscription_token): {e}")
-        return
 
     import secrets
     session = Session()
@@ -295,6 +306,48 @@ def _rename_config_with_index(config: str, index: int) -> str:
     return f"{config}#{quote(title)}"
 
 
+def _table_exists(table_name: str) -> bool:
+    try:
+        with engine.begin() as conn:
+            if conn.dialect.name == "sqlite":
+                row = conn.execute(
+                    text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:name LIMIT 1"),
+                    {"name": table_name},
+                ).first()
+                return bool(row)
+            row = conn.execute(
+                text("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=:name LIMIT 1"),
+                {"name": table_name},
+            ).first()
+            return bool(row)
+    except Exception:
+        return False
+
+
+def _load_configs_from_vpn_keys(session, user_id: int) -> list:
+    try:
+        key_row = (
+            session.query(VpnKey)
+            .filter_by(user_id=user_id)
+            .order_by(VpnKey.issued_at.desc(), VpnKey.id.desc())
+            .first()
+        )
+    except Exception:
+        return []
+
+    if not key_row or not key_row.key:
+        return []
+    key = key_row.key.strip()
+    if not key:
+        return []
+
+    if key.startswith(("http://", "https://")):
+        return fetch_subscription_configs(key, "Main")
+    if _is_config_line(key):
+        return [modify_config_name(key, "Main")]
+    return []
+
+
 @app.route('/sub')
 def combine_subscriptions():
     """Объединяет подписки пользователя со всех серверов и возвращает base64"""
@@ -312,41 +365,44 @@ def combine_subscriptions():
         session.close()
         return Response("Invalid token", status=404)
     
-    # Получаем все подписки пользователя из UserServer (избегаем дублирования)
-    user_servers = session.query(UserServer).filter_by(user_id=user.telegram_id).all()
-    
     all_configs = []
-    processed_server_ids = set()
-    
-    # Сначала обрабатываем UserServer (они имеют приоритет)
-    for us in user_servers:
-        server = session.query(Server).filter_by(id=us.server_id).first()
-        if server:
-            processed_server_ids.add(server.id)
-            server_name = server.name
-            configs = fetch_subscription_configs(us.subscription_url, server_name)
-            all_configs.extend(configs)
-    
-    # Если есть основная подписка и она не дублируется в UserServer
-    if user.subscription_url and not user_servers:
-        # Находим сервер для основной подписки
-        main_server = session.query(Server).filter_by(is_active=True).first()
-        server_name = main_server.name if main_server else None
-        configs = fetch_subscription_configs(user.subscription_url, server_name)
-        all_configs.extend(configs)
+
+    # Legacy path (old schema with user_servers/servers).
+    if _table_exists("user_servers") and _table_exists("servers"):
+        try:
+            user_servers = session.query(UserServer).filter_by(user_id=user.id).all()
+            for us in user_servers:
+                server = session.query(Server).filter_by(id=us.server_id).first()
+                if server:
+                    server_name = server.name
+                    configs = fetch_subscription_configs(us.subscription_url, server_name)
+                    all_configs.extend(configs)
+        except Exception as e:
+            print(f"Legacy user_servers path failed: {e}")
+
+    # Current bot schema fallback: load latest key from vpn_keys.
+    if not all_configs and _table_exists("vpn_keys"):
+        all_configs.extend(_load_configs_from_vpn_keys(session, user.id))
     
     session.close()
     
     if not all_configs:
         return Response("No valid configurations found", status=404)
     
-    # Удаляем дубликаты сохраняя порядок
-    seen = set()
-    unique_configs = []
-    for config in all_configs:
-        if config not in seen:
-            seen.add(config)
-            unique_configs.append(config)
+    # Переименование + дедупликация через новый модуль
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from bot.utils.sub_combiner import rename_configs
+        unique_configs = rename_configs(all_configs)
+    except Exception as e:
+        print(f"rename_configs failed in /sub, using raw: {e}")
+        seen = set()
+        unique_configs = []
+        for config in all_configs:
+            if config not in seen:
+                seen.add(config)
+                unique_configs.append(config)
     
     # Объединяем и кодируем обратно в base64
     combined = '\n'.join(unique_configs)
@@ -364,22 +420,46 @@ def combine_subscriptions():
 
 @app.route('/sub_from_url')
 def combine_subscription_from_url():
-    """Перерабатывает подписку из внешнего URL и возвращает base64"""
-    src = request.args.get('src', '').strip()
-    if not src:
-        return Response("Missing src parameter", status=400)
+    """Перерабатывает подписку из внешнего URL и возвращает base64.
 
-    configs = fetch_subscription_configs(src, None)
+    Принимает параметр ``url`` (полностью закодированный, включая фрагмент #).
+    Фрагмент игнорируется при скачивании — используется только путь+query.
+    """
+    from urllib.parse import unquote, urlsplit
+
+    raw_url = request.args.get('url', '').strip()
+    if not raw_url:
+        # Обратная совместимость с параметром src
+        raw_url = request.args.get('src', '').strip()
+    if not raw_url:
+        return Response("Missing url parameter", status=400)
+
+    # Декодируем на случай двойного кодирования
+    src = unquote(raw_url)
+
+    # Убираем fragment (#…) — он не нужен при HTTP-запросе
+    parsed = urlsplit(src)
+    clean_src = parsed._replace(fragment="").geturl()
+
+    configs = fetch_subscription_configs(clean_src, None)
     if not configs:
         return Response("No valid configurations found", status=404)
 
-    renamed = []
-    seen = set()
-    for idx, cfg in enumerate(configs, start=1):
-        mod = _rename_config_with_index(cfg, idx)
-        if mod not in seen:
-            seen.add(mod)
-            renamed.append(mod)
+    # Применяем умное переименование через новый модуль
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(__file__))
+        from bot.utils.sub_combiner import rename_configs
+        renamed = rename_configs(configs)
+    except Exception as e:
+        print(f"rename_configs failed, falling back to index-based: {e}")
+        renamed = []
+        seen: set = set()
+        for idx, cfg in enumerate(configs, start=1):
+            mod = _rename_config_with_index(cfg, idx)
+            if mod not in seen:
+                seen.add(mod)
+                renamed.append(mod)
 
     combined = '\n'.join(renamed)
     encoded = base64.b64encode(combined.encode('utf-8')).decode('utf-8')
@@ -601,8 +681,14 @@ def user_page(token):
         session.close()
         return "Invalid token", 404
     
-    # Получаем все подписки пользователя (избегаем дублирования)
-    user_servers = session.query(UserServer).filter_by(user_id=user.telegram_id).all()
+    # Получаем все подписки пользователя (legacy schema)
+    user_servers = []
+    if _table_exists("user_servers"):
+        try:
+            user_servers = session.query(UserServer).filter_by(user_id=user.id).all()
+        except Exception as e:
+            print(f"Failed to load user_servers: {e}")
+            user_servers = []
     
     # Собираем информацию о серверах
     servers_info = []
@@ -617,42 +703,6 @@ def user_page(token):
         if server and server.id not in processed_server_ids:
             processed_server_ids.add(server.id)
             info = get_user_info_from_server(server, us.hiddify_uuid)
-            if info:
-                used = info.get('current_usage_GB', 0)
-                limit = info.get('usage_limit_GB', 0)
-                days = info.get('package_days', 0)
-                
-                remaining = days
-                if info.get('start_date'):
-                    try:
-                        start = datetime.fromisoformat(info['start_date'].replace('Z', '+00:00'))
-                        passed = (datetime.now() - start.replace(tzinfo=None)).days
-                        remaining = max(0, days - passed)
-                    except:
-                        pass
-                
-                servers_info.append({
-                    'name': server.name,
-                    'used_gb': used,
-                    'limit_gb': limit,
-                    'remaining_days': remaining,
-                    'is_active': info.get('enable', False)
-                })
-                
-                total_traffic_used += used
-                if limit < 999999:
-                    total_traffic_limit += limit
-                else:
-                    total_traffic_limit = float('inf')
-                    
-                if remaining < min_remaining_days:
-                    min_remaining_days = remaining
-    
-    # Если нет UserServer, проверяем основную подписку
-    if not user_servers and user.hiddify_uuid:
-        server = session.query(Server).filter_by(is_active=True).first()
-        if server:
-            info = get_user_info_from_server(server, user.hiddify_uuid)
             if info:
                 used = info.get('current_usage_GB', 0)
                 limit = info.get('usage_limit_GB', 0)

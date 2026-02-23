@@ -16,7 +16,8 @@ class Settings(BaseSettings):
     vpn_api_timeout_seconds: int = 20
     vpn_api_verify_ssl: bool = True
     sub_combiner_base_url: str = ""
-    sub_domain: str = ""
+    sub_combiner_port: int = 5000
+    sub_domain: str = "https://your-domain.com"
     hiddify_admin_link: str = ""
     hiddify_api_key: str = ""
     hiddify_verify_ssl: bool = False

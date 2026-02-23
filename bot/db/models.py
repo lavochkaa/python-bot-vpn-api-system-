@@ -43,6 +43,7 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String(64))
     full_name: Mapped[str | None] = mapped_column(String(256))
     segment: Mapped[str | None] = mapped_column(String(64))
+    subscription_token: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
     balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

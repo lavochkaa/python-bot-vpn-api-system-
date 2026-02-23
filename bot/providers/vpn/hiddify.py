@@ -2,18 +2,15 @@ import re
 import ssl
 import time
 import logging
-import base64
-import json
 import asyncio
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote, urlparse, urlsplit, urlunsplit
+from urllib.parse import urlparse
 
 import aiohttp
 
 from bot.config import settings
 from bot.providers.vpn.base import VpnKeyData, VpnKeyProvider
-from bot.utils.sub_combiner import build_subscription_payload, modify_config_name, parse_subscription_payload
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +36,15 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
             build_preset=build_preset,
         )
         connector = self._build_connector()
+        request_timeout = max(5, int(settings.vpn_api_timeout_seconds or self._REQUEST_TIMEOUT_SECONDS))
+        total_deadline = max(self._TOTAL_DEADLINE_SECONDS, request_timeout * 4)
 
         async with aiohttp.ClientSession(connector=connector) as session:
             result: Any | None = None
             last_error: str = "unknown error"
             attempts = self._build_attempts(api_base, api_key)
             errors: list[str] = []
-            deadline = time.monotonic() + self._TOTAL_DEADLINE_SECONDS
+            deadline = time.monotonic() + total_deadline
             for idx, payload in enumerate(payload_variants, start=1):
                 for method, endpoint, headers, params in attempts:
                     if time.monotonic() >= deadline:
@@ -57,7 +56,7 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                             json=payload,
                             headers=headers,
                             params=params,
-                            timeout=self._REQUEST_TIMEOUT_SECONDS,
+                            timeout=request_timeout,
                         )
                         body = await response.text()
                         if response.status < 400:
@@ -69,7 +68,7 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                         )
                         last_error = err
                         errors.append(err)
-                    except aiohttp.ClientError as exc:
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                         err = f"[payload#{idx}] {method} {endpoint} -> {exc}"
                         last_error = err
                         errors.append(err)
@@ -102,20 +101,7 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                 key = self._build_key_from_template(self._pick_uuid(refs.get("ids", [])))
             if not key:
                 raise ValueError("Hiddify user created, but key/subscription URL not found in response.")
-            if key.startswith(("http://", "https://")):
-                combiner_key = await self._build_combiner_subscription_url(session, key)
-                if combiner_key:
-                    return VpnKeyData(key=combiner_key, meta={"provider": "hiddify", "raw": result})
-            # Prefer "cleaned + rebuilt" subscription from provider payload.
-            # Rebuild is independent from create-user deadline to avoid returning raw URL.
-            rebuild_deadline = time.monotonic() + 30
-            rebuilt = await self._try_rebuild_subscription_payload(session, key, rebuild_deadline)
-            if rebuilt:
-                # Keep URL for bot UX. Rebuilt non-URL payloads are not suitable for "tap to open".
-                if rebuilt.startswith(("http://", "https://")):
-                    key = rebuilt
-            else:
-                key = self._append_profile_name(key, user_id)
+            # Return provider panel link as-is, without combiner/rewrite.
             return VpnKeyData(key=key, meta={"provider": "hiddify", "raw": result})
 
     async def revoke_key(self, key: str) -> None:
@@ -673,157 +659,12 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                 return text
         return None
 
-    def _append_profile_name(self, key: str, user_id: int) -> str:
-        profile = (settings.hiddify_profile_name or "CRYSTAL VPN").strip()
-        if not profile:
-            return key
-        profile_slug = re.sub(r"[^A-Za-z0-9]+", "-", profile).strip("-")
-        if not profile_slug:
-            profile_slug = "CRYSTAL-VPN"
-        fragment = profile_slug
-        parts = urlsplit(key)
-        # Force custom profile title even if provider returned fragment with IP.
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, quote(fragment)))
-
-    async def _build_combiner_subscription_url(
-        self,
-        session: aiohttp.ClientSession,
-        source_url: str,
-    ) -> str | None:
-        base = (settings.sub_combiner_base_url or settings.sub_domain or "").strip().rstrip("/")
-        if not base:
-            logger.warning(
-                "Combiner URL is not configured. Set SUB_COMBINER_BASE_URL or SUB_DOMAIN to enable subscription rewrite."
-            )
-            return None
-        return f"{base}/sub_from_url?src={quote(source_url, safe='')}"
-
     def _compact_error(self, body: str) -> str:
         text = re.sub(r"<[^>]+>", " ", body)
         text = re.sub(r"\s+", " ", text).strip()
         if len(text) > 240:
             return text[:240] + "..."
         return text
-
-    async def _try_rebuild_subscription_payload(
-        self,
-        session: aiohttp.ClientSession,
-        key: str,
-        deadline: float,
-    ) -> str | None:
-        if not key.startswith(("http://", "https://")):
-            rebuilt = self._rebuild_subscription_text(key)
-            return rebuilt or None
-        parsed = urlsplit(key)
-        base_q = parsed.query
-        query_variants = [
-            base_q,
-            "&".join(chunk for chunk in [base_q, "sub=1"] if chunk),
-            "&".join(chunk for chunk in [base_q, "clash=1"] if chunk),
-            "&".join(chunk for chunk in [base_q, "base64=1"] if chunk),
-            "&".join(chunk for chunk in [base_q, "raw=1"] if chunk),
-        ]
-        user_agents = (
-            "hiddify-next",
-            "clash-meta",
-            "v2rayN",
-            "Streisand",
-            "CrystalVPNBot/1.0",
-        )
-        candidates = []
-        for q in query_variants:
-            candidates.append(urlunsplit((parsed.scheme, parsed.netloc, parsed.path, q, "")))
-        for candidate in candidates:
-            for ua in user_agents:
-                timeout_left = max(1.0, deadline - time.monotonic())
-                timeout = min(12.0, timeout_left)
-                if timeout_left <= 0:
-                    return None
-                try:
-                    response = await session.get(
-                        candidate,
-                        timeout=timeout,
-                        headers={
-                            "Accept": "text/plain,application/json,*/*",
-                            "User-Agent": ua,
-                        },
-                    )
-                    body = await response.text()
-                    if response.status >= 400:
-                        continue
-                    # If server returned HTML/error page, skip rewrite.
-                    if "<html" in body.lower():
-                        continue
-                    rebuilt = self._rebuild_subscription_text(body)
-                    if rebuilt:
-                        return rebuilt
-                except (aiohttp.ClientError, asyncio.TimeoutError):
-                    continue
-        logger.warning("Could not fetch parseable subscription body from source URL, fallback to raw URL.")
-        return None
-
-    def _rebuild_subscription_text(self, raw: str) -> str | None:
-        text = raw.strip()
-        if not text:
-            return None
-        links, source_is_base64 = parse_subscription_payload(text)
-        if not links:
-            return None
-        brand_name = (settings.hiddify_profile_name or "CRYSTAL VPN").strip() or "CRYSTAL VPN"
-        renamed = [modify_config_name(link, brand_name=brand_name, index=idx) for idx, link in enumerate(links, start=1)]
-        return build_subscription_payload(renamed, as_base64=source_is_base64)
-
-    def _extract_subscription_links(self, text: str) -> tuple[list[str], bool]:
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        links = [line for line in lines if self._looks_like_link(line)]
-        if links:
-            return links, False
-        decoded = self._try_decode_base64_text(text)
-        if not decoded:
-            return [], False
-        decoded_lines = [line.strip() for line in decoded.splitlines() if line.strip()]
-        decoded_links = [line for line in decoded_lines if self._looks_like_link(line)]
-        return decoded_links, True
-
-    def _looks_like_link(self, line: str) -> bool:
-        return line.startswith(("vmess://", "vless://", "trojan://", "ss://", "ssr://", "hy2://", "tuic://"))
-
-    def _try_decode_base64_text(self, value: str) -> str | None:
-        compact = re.sub(r"\s+", "", value)
-        if not compact:
-            return None
-        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
-            try:
-                padded = compact + "=" * (-len(compact) % 4)
-                decoded = decoder(padded.encode("utf-8")).decode("utf-8", errors="ignore")
-                if "://" in decoded:
-                    return decoded
-            except Exception:
-                continue
-        return None
-
-    def _rename_subscription_link(self, link: str, idx: int) -> str:
-        name = f"{(settings.hiddify_profile_name or 'CRYSTAL VPN').strip()} | обход {idx}"
-        if link.startswith("vmess://"):
-            payload = link[len("vmess://") :].strip()
-            decoded = self._try_decode_base64_text(payload)
-            if decoded:
-                try:
-                    obj = json.loads(decoded)
-                    if isinstance(obj, dict):
-                        obj["ps"] = name
-                        encoded = base64.b64encode(json.dumps(obj, ensure_ascii=False).encode("utf-8")).decode("utf-8")
-                        return f"vmess://{encoded}"
-                except Exception:
-                    return link
-            return link
-        try:
-            parts = urlsplit(link)
-            return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, quote(name)))
-        except Exception:
-            if "#" in link:
-                return f"{link.split('#', 1)[0]}#{quote(name)}"
-            return f"{link}#{quote(name)}"
 
     def _build_connector(self) -> aiohttp.TCPConnector | None:
         if settings.hiddify_verify_ssl:
