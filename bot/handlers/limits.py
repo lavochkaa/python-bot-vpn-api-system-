@@ -62,6 +62,12 @@ def _ttl_seconds() -> int:
     return 120
 
 
+def _format_dt(value: datetime | None) -> str:
+    if not value:
+        return "—"
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
 async def _resolve_user_row(session: AsyncSession, target: str) -> dict | None:
     target = target.strip()
     if target.isdigit():
@@ -228,6 +234,132 @@ async def who_online(message: Message, session: AsyncSession) -> None:
         lines.append(
             f"• <code>{entry['client_ip']}</code> | last_seen={last_seen} | {ago}s ago | blocked_until={blocked_text}"
         )
+
+    await send_or_answer(message, "\n".join(lines))
+
+
+@router.message(Command("uidinfo"))
+async def uid_info(message: Message, session: AsyncSession) -> None:
+    if not _is_admin(message.from_user.id):
+        await send_or_answer(message, "Доступ запрещен.")
+        return
+
+    args = _command_args(message)
+    if len(args) != 1:
+        await send_or_answer(message, "Использование: /uidinfo <uuid|user_id>")
+        return
+
+    row = await _resolve_user_row(session, args[0])
+    if not row:
+        await send_or_answer(message, "Пользователь не найден по переданному uuid/user_id")
+        return
+
+    uuid_value = row.get("subscription_uuid")
+    if not uuid_value:
+        await send_or_answer(
+            message,
+            (
+                "UUID не задан\n"
+                f"user_id: <code>{row['id']}</code>\n"
+                "Для этого пользователя еще нет subscription_uuid."
+            ),
+        )
+        return
+
+    ttl = _ttl_seconds()
+    now = datetime.now(timezone.utc)
+    max_devices = row.get("max_devices") if row.get("max_devices") is not None else 2
+
+    active_result = await session.execute(
+        text(
+            """
+            SELECT client_ip, last_seen, blocked_until
+            FROM device_sessions
+            WHERE uuid = :uuid
+              AND last_seen >= (CURRENT_TIMESTAMP - (:ttl * interval '1 second'))
+            ORDER BY last_seen DESC
+            """
+        ),
+        {"uuid": uuid_value, "ttl": ttl},
+    )
+    active_rows = list(active_result.mappings().all())
+
+    blocked_result = await session.execute(
+        text(
+            """
+            SELECT client_ip, last_seen, blocked_until
+            FROM device_sessions
+            WHERE uuid = :uuid
+              AND blocked_until IS NOT NULL
+            ORDER BY blocked_until DESC NULLS LAST, last_seen DESC
+            LIMIT 20
+            """
+        ),
+        {"uuid": uuid_value},
+    )
+    blocked_rows = list(blocked_result.mappings().all())
+
+    total_result = await session.execute(
+        text(
+            """
+            SELECT COUNT(*) AS total_sessions,
+                   COUNT(*) FILTER (WHERE blocked_until IS NOT NULL) AS blocked_total
+            FROM device_sessions
+            WHERE uuid = :uuid
+            """
+        ),
+        {"uuid": uuid_value},
+    )
+    totals = total_result.mappings().first() or {"total_sessions": 0, "blocked_total": 0}
+
+    active_blocked_count = sum(
+        1
+        for r in active_rows
+        if r.get("blocked_until") is not None and r["blocked_until"] > now
+    )
+
+    lines = [
+        "Полная информация по пользователю",
+        f"user_id: <code>{row['id']}</code>",
+        f"uuid: <code>{uuid_value}</code>",
+        f"max_devices: <b>{max_devices}</b>",
+        f"ttl_window: <b>{ttl} сек</b>",
+        f"active_now: <b>{len(active_rows)}</b>",
+        f"blocked_now: <b>{active_blocked_count}</b>",
+        f"sessions_total_saved: <b>{totals['total_sessions']}</b>",
+        f"blocked_total_saved: <b>{totals['blocked_total']}</b>",
+        "",
+        "Активные IP:",
+    ]
+
+    if not active_rows:
+        lines.append("• нет активных устройств")
+    else:
+        for entry in active_rows[:20]:
+            block_state = "blocked" if entry.get("blocked_until") and entry["blocked_until"] > now else "ok"
+            lines.append(
+                f"• <code>{entry['client_ip']}</code> | last_seen={_format_dt(entry.get('last_seen'))} | state={block_state} | blocked_until={_format_dt(entry.get('blocked_until'))}"
+            )
+
+    lines.extend(["", "Последние блокировки:"])
+    if not blocked_rows:
+        lines.append("• блокировок не было")
+    else:
+        for entry in blocked_rows:
+            is_active = entry.get("blocked_until") and entry["blocked_until"] > now
+            lines.append(
+                f"• <code>{entry['client_ip']}</code> | blocked_until={_format_dt(entry.get('blocked_until'))} | {'ACTIVE' if is_active else 'expired'} | last_seen={_format_dt(entry.get('last_seen'))}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "Что видит пользователь при блокировке:",
+            "• Подключение не устанавливается с нового устройства (таймаут/ошибка сети в клиенте).",
+            "• В подписке отдельной серверной строки 'лимит исчерпан' обычно нет, это поведение на уровне Xray/firewall.",
+            "• Чтобы пустить снова: /resetdevices <uuid|user_id> или дождаться истечения TTL.",
+        ]
+    )
 
     await send_or_answer(message, "\n".join(lines))
 

@@ -14,9 +14,21 @@ UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{12}"
 )
+EMAIL_UUID_RE = re.compile(
+    r"email:\s*([0-9a-fA-F]{8}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12})@",
+    re.IGNORECASE,
+)
 IP_RE = re.compile(
     r"(?:\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b)"
     r"|(?:\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\b)"
+)
+FROM_IP_RE = re.compile(
+    r"\bfrom\s+([0-9a-fA-F\.:]+):\d+\b",
+    re.IGNORECASE,
 )
 
 
@@ -126,6 +138,16 @@ def parse_event(line: str) -> Event | None:
             payload = None
         if payload is not None:
             found_uuid, found_ip, found_ts = _scan_json(payload)
+
+    if found_uuid is None:
+        email_match = EMAIL_UUID_RE.search(raw)
+        if email_match:
+            found_uuid = _normalize_uuid(email_match.group(1))
+
+    if found_ip is None:
+        from_ip_match = FROM_IP_RE.search(raw)
+        if from_ip_match:
+            found_ip = _normalize_ip(from_ip_match.group(1))
 
     if found_uuid is None:
         uuid_match = UUID_RE.search(raw)
