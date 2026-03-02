@@ -104,24 +104,6 @@ cp .env.example .env
 docker-compose up --build
 ```
 
-## Sub Combiner (отдельный сервис)
-
-В проект импортирован полный `sub_combiner.py` (Flask-сервис для объединения/модификации подписок).
-
-Запуск вместе с ботом через Docker:
-
-```bash
-docker-compose up --build
-```
-
-Сервис доступен на `http://localhost:5000`.
-Чтобы бот автоматически выдавал ссылку через combiner после оплаты, укажите в `.env`:
-
-```env
-SUB_DOMAIN=https://your-domain.com
-SUB_COMBINER_PORT=5000
-```
-
 ## Миграции
 
 ```bash
@@ -171,11 +153,3 @@ Expected endpoints:
 
 - Если `docker-compose` не найден: используй `docker compose ...` (без дефиса) или запускай локально без Docker.
 - Если `TelegramConflictError`: запущено несколько экземпляров бота. Заверши все процессы и оставь один.
-- Если `Port 5000 is in use`: запусти `sub_combiner` на другом порту (например `5001`) и обнови `SUB_COMBINER_PORT`.
-- Для переработки подписки через combiner в `.env` обязательно:
-  - `VPN_PROVIDER=hiddify`
-  - `SUB_DOMAIN=https://<домен-или-ip>`
-  - `SUB_COMBINER_PORT=5000`
-- Если ссылка из бота не меняется:
-  - проверь, что `sub_combiner.py` реально запущен и доступен по URL;
-  - проверь, что бот перезапущен после изменения `.env`.

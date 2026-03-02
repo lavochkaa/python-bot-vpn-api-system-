@@ -2,6 +2,9 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import json
 import logging
+import re
+from urllib.parse import urlparse
+from uuid import UUID
 from bot.db.models import BalanceLedger, Subscription, VpnKey
 from bot.constants.subscription_pricing import SUBSCRIPTION_PRICE_MATRIX
 from bot.repositories.ledger import BalanceLedgerRepository
@@ -12,6 +15,63 @@ from bot.repositories.vpn_key import VpnKeyRepository
 from bot.providers.vpn.base import VpnKeyProvider
 
 logger = logging.getLogger(__name__)
+UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12}"
+)
+
+
+def _normalize_uuid(value: str | None) -> str | None:
+    if not value:
+        return None
+    candidate = value.strip().lower()
+    try:
+        return str(UUID(candidate))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _uuid_from_key(key: str | None) -> str | None:
+    if not key:
+        return None
+    match = UUID_RE.search(key)
+    if match:
+        return _normalize_uuid(match.group(0))
+    if key.startswith(("http://", "https://")):
+        parsed = urlparse(key)
+        for chunk in parsed.path.split("/"):
+            maybe = _normalize_uuid(chunk)
+            if maybe:
+                return maybe
+    return None
+
+
+def _uuid_from_meta(meta: dict | None) -> str | None:
+    if not meta:
+        return None
+    scan: list[object] = [meta]
+    while scan:
+        node = scan.pop()
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(v, (dict, list)):
+                    scan.append(v)
+                elif isinstance(v, str):
+                    if k.lower() in {"uuid", "user_uuid", "client_uuid", "subscription_uuid"}:
+                        normalized = _normalize_uuid(v)
+                        if normalized:
+                            return normalized
+                    match = UUID_RE.search(v)
+                    if match:
+                        normalized = _normalize_uuid(match.group(0))
+                        if normalized:
+                            return normalized
+        elif isinstance(node, list):
+            scan.extend(node)
+    return None
 
 
 class SubscriptionService:
@@ -74,6 +134,9 @@ class SubscriptionService:
                 or ""
             ) or None
             payload_json = json.dumps(key_data.meta, ensure_ascii=False) if key_data.meta else None
+            subscription_uuid = _uuid_from_meta(key_data.meta) or _uuid_from_key(key_data.key)
+            if subscription_uuid:
+                user.subscription_uuid = subscription_uuid
 
             user.balance -= final_price
             session.add(

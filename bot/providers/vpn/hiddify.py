@@ -101,7 +101,7 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                 key = self._build_key_from_template(self._pick_uuid(refs.get("ids", [])))
             if not key:
                 raise ValueError("Hiddify user created, but key/subscription URL not found in response.")
-            # Return provider panel link as-is, without combiner/rewrite.
+            # Return provider panel link as-is.
             return VpnKeyData(key=key, meta={"provider": "hiddify", "raw": result})
 
     async def revoke_key(self, key: str) -> None:

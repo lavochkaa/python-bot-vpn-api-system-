@@ -44,6 +44,8 @@ class User(Base):
     full_name: Mapped[str | None] = mapped_column(String(256))
     segment: Mapped[str | None] = mapped_column(String(64))
     subscription_token: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    subscription_uuid: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    max_devices: Mapped[int] = mapped_column(Integer, default=2, nullable=False, server_default="2")
     balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -1,11 +1,8 @@
 aiogram==3.7.0
 sqlalchemy[asyncio]==2.0.30
 asyncpg==0.29.0
-aiosqlite==0.20.0
 alembic==1.13.1
 pydantic-settings==2.2.1
 pydantic>=2.7.4,<2.8
 python-dotenv==1.0.1
 psycopg2-binary==2.9.10
-Flask==3.0.3
-requests==2.32.3

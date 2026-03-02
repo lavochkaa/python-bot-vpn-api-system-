@@ -1,0 +1,26 @@
+[Unit]
+Description=Device limit daemon for Xray/Hiddify (server-side per-UUID limit)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vpn-bot-for-roma
+EnvironmentFile=/opt/vpn-bot-for-roma/.env
+ExecStart=/opt/vpn-bot-for-roma/.venv/bin/python -m device_limit.main
+Restart=always
+RestartSec=3
+
+# If you prefer non-root, grant at least:
+#   CAP_NET_ADMIN CAP_NET_RAW
+# and give service read access to ACCESS_LOG_PATH.
+# AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+# CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+# NoNewPrivileges=true
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

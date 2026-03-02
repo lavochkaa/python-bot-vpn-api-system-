@@ -8,7 +8,7 @@ from bot.config import settings
 from bot.db.base import AsyncSessionFactory
 from bot.middlewares.db import DbSessionMiddleware
 from bot.middlewares.auth import ChannelSubscriptionMiddleware
-from bot.handlers import common, balance, subscription, keys, info, support, admin
+from bot.handlers import common, balance, subscription, keys, info, support, admin, limits
 from bot.repositories.plan import PlanRepository
 
 
@@ -46,6 +46,7 @@ async def main() -> None:
     dp.include_router(info.router)
     dp.include_router(support.router)
     dp.include_router(admin.router)
+    dp.include_router(limits.router)
 
     logger.info("Starting bot polling...")
     await dp.start_polling(bot, skip_updates=True)

@@ -1,8 +1,11 @@
 """bot/handlers/keys.py"""
 
 import base64
+import re
 from datetime import datetime, timezone
 from urllib.parse import quote
+from urllib.parse import urlparse
+from uuid import UUID
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
@@ -11,10 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.repositories.subscription import SubscriptionRepository
+from bot.repositories.user import UserRepository
 from bot.repositories.vpn_key import VpnKeyRepository
 from bot.utils.messages import edit_or_send
 
 router = Router()
+UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12}"
+)
 
 APP_TITLES = {
     "hiddify":   "Hiddify",
@@ -94,6 +105,28 @@ def _build_deep_link(app: str, key: str) -> str:
     raise ValueError(f"Unknown app: {app}")
 
 
+def _extract_uuid_from_key(key: str) -> str | None:
+    match = UUID_RE.search(key)
+    if match:
+        candidate = match.group(0).lower()
+        try:
+            return str(UUID(candidate))
+        except ValueError:
+            return None
+
+    if key.startswith(("https://", "http://")):
+        parsed = urlparse(key)
+        for chunk in parsed.path.split("/"):
+            raw = chunk.strip().lower()
+            if not raw:
+                continue
+            try:
+                return str(UUID(raw))
+            except ValueError:
+                continue
+    return None
+
+
 # ── Проверка активности подписки ─────────────────────────────────────────────
 
 def _is_effectively_active(sub) -> bool:
@@ -167,6 +200,14 @@ async def connect_apps(call: CallbackQuery, session: AsyncSession) -> None:
 
     vpn_key = keys[0]
     user_key = vpn_key.key
+    extracted_uuid = _extract_uuid_from_key(user_key)
+    if extracted_uuid:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_tg_id(call.from_user.id)
+        if user and user.subscription_uuid != extracted_uuid:
+            user.subscription_uuid = extracted_uuid
+            session.add(user)
+            await session.commit()
 
     if user_key.startswith(("https://", "http://")):
         safe_url = user_key.replace("<", "").replace(">", "")
@@ -212,6 +253,15 @@ async def connect_pick_app(call: CallbackQuery, session: AsyncSession) -> None:
 
     vpn_key = keys[0]
     user_key = vpn_key.key
+    extracted_uuid = _extract_uuid_from_key(user_key)
+    if extracted_uuid:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_tg_id(call.from_user.id)
+        if user and user.subscription_uuid != extracted_uuid:
+            user.subscription_uuid = extracted_uuid
+            session.add(user)
+            await session.commit()
+
     deep_link = _build_deep_link(app, user_key)
     open_url = _telegram_safe_open_url(deep_link)
 
