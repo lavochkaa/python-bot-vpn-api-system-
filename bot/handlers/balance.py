@@ -112,7 +112,7 @@ async def _send_topup_invoice(message: Message, user_id: int, state: FSMContext,
             prices=[LabeledPrice(label="Пополнение", amount=_to_minor_units(amount))],
         )
     except TelegramAPIError:
-        await send_or_answer(message, "Не удалось создать счет. Проверьте PAYMENT_PROVIDER_TOKEN.")
+        await edit_or_send(message, "Не удалось создать счет. Проверьте PAYMENT_PROVIDER_TOKEN.")
     finally:
         await state.clear()
 

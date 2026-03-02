@@ -14,6 +14,7 @@ from bot.constants.subscription_pricing import DURATION_OPTIONS, TRAFFIC_OPTIONS
 from bot.keyboards.subscription import (
     duration_keyboard,
     insufficient_balance_keyboard,
+    subscription_activated_keyboard,
     subscription_active_keyboard,
     subscription_confirm_keyboard,
     traffic_keyboard,
@@ -334,6 +335,6 @@ async def _finish_purchase(message: Message, user_id: int, state: FSMContext, se
         f"Действует до: <b>{sub.expires_at.strftime('%d.%m.%Y')}</b>"
         f"{key_text}\n\n"
         "Кнопка «Подключиться» откроет инструкцию и подключение.",
-        reply_markup=subscription_active_keyboard(),
+        reply_markup=subscription_activated_keyboard(),
     )
     await state.clear()

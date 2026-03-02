@@ -18,12 +18,22 @@ def subscription_active_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def subscription_activated_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔌 Подключиться", callback_data="menu:connect")
+    builder.button(text="🔄 Изменить подписку", callback_data="subscription:change")
+    builder.button(text="🔙 Назад", callback_data="menu:main")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def duration_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="1 месяц", callback_data="subscription:duration:30")
-    builder.button(text="2 месяца", callback_data="subscription:duration:60")
+    builder.button(text="3 месяца", callback_data="subscription:duration:90")
+    builder.button(text="6 месяцев", callback_data="subscription:duration:180")
     builder.button(text="12 месяцев", callback_data="subscription:duration:365")
-    builder.button(text="🔙 Назад", callback_data="menu:subscription")
+    builder.button(text="🔙 Назад", callback_data="menu:main")
     builder.adjust(1)
     return builder.as_markup()
 

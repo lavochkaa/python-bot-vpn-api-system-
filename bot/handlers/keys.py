@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.repositories.subscription import SubscriptionRepository
 from bot.repositories.vpn_key import VpnKeyRepository
-from bot.utils.messages import edit_or_send, send_or_answer
+from bot.utils.messages import edit_or_send
 
 router = Router()
 
@@ -21,6 +21,51 @@ APP_TITLES = {
     "v2":        "v2",
     "streisand": "Streisand",
     "happ":      "Happ",
+}
+
+DEVICE_GUIDES = {
+    "android": {
+        "text": (
+            "📱 <b>Android — как подключиться</b>\n\n"
+            "1. Установите приложение по кнопкам ниже.\n"
+            "2. Вернитесь в «Подключиться» и нажмите нужное приложение (Hiddify/v2/Streisand/Happ).\n"
+            "3. Подтвердите импорт подписки."
+        ),
+        "links": (
+            ("Hiddify", "https://play.google.com/store/apps/details?id=app.hiddify.com"),
+            ("v2rayNG", "https://play.google.com/store/apps/details?id=com.v2ray.ang"),
+            ("Streisand", "https://play.google.com/store/search?q=streisand&c=apps"),
+            ("Happ", "https://play.google.com/store/search?q=happ%20vpn&c=apps"),
+        ),
+    },
+    "ios": {
+        "text": (
+            "🍎 <b>iOS — как подключиться</b>\n\n"
+            "1. Установите приложение по кнопкам ниже.\n"
+            "2. Вернитесь в «Подключиться» и нажмите нужное приложение.\n"
+            "3. Разрешите импорт и включите подключение."
+        ),
+        "links": (
+            ("Hiddify", "https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532"),
+            ("v2box", "https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690"),
+            ("Streisand", "https://apps.apple.com/us/search?term=streisand"),
+            ("Happ", "https://apps.apple.com/us/search?term=happ%20vpn"),
+        ),
+    },
+    "pc": {
+        "text": (
+            "💻 <b>ПК — как подключиться</b>\n\n"
+            "1. Установите клиент для вашей ОС.\n"
+            "2. Вернитесь в «Подключиться» и нажмите подходящее приложение.\n"
+            "3. Подтвердите импорт подписки и подключитесь."
+        ),
+        "links": (
+            ("Hiddify Next", "https://github.com/hiddify/hiddify-next/releases"),
+            ("Clash Verge Rev", "https://github.com/clash-verge-rev/clash-verge-rev/releases"),
+            ("v2rayN (Windows)", "https://github.com/2dust/v2rayN/releases"),
+            ("Nekoray (Win/Linux)", "https://github.com/MatsuriDayo/nekoray/releases"),
+        ),
+    },
 }
 
 
@@ -61,28 +106,22 @@ def _is_effectively_active(sub) -> bool:
 
 def _apps_pick_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="Hiddify",   callback_data="connect:app:hiddify")
-    builder.button(text="v2",        callback_data="connect:app:v2")
-    builder.button(text="Streisand", callback_data="connect:app:streisand")
-    builder.button(text="Happ",      callback_data="connect:app:happ")
+    builder.button(text="📱 Android", callback_data="connect:device:android")
+    builder.button(text="🍎 iOS", callback_data="connect:device:ios")
+    builder.button(text="💻 ПК", callback_data="connect:device:pc")
     builder.button(text="🔙 Назад",  callback_data="menu:main")
-    builder.adjust(2, 2, 1)
+    builder.adjust(2, 1, 1)
     return builder.as_markup()
 
 
-def _direct_subscription_keyboard():
+def _device_guide_keyboard(device: str):
     builder = InlineKeyboardBuilder()
-    builder.button(text="❓ Как подключиться?", callback_data="connect:howto")
-    builder.button(text="🔙 В меню",            callback_data="menu:main")
-    builder.adjust(1, 1)
-    return builder.as_markup()
-
-
-def _howto_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🔙 К ссылке подключения", callback_data="menu:connect")
-    builder.button(text="🏠 В меню",                callback_data="menu:main")
-    builder.adjust(1, 1)
+    device_data = DEVICE_GUIDES[device]
+    for label, url in device_data["links"]:
+        builder.button(text=f"⬇️ {label}", url=url)
+    builder.button(text="🔙 К подключению", callback_data="menu:connect")
+    builder.button(text="🏠 В меню", callback_data="menu:main")
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -135,21 +174,21 @@ async def connect_apps(call: CallbackQuery, session: AsyncSession) -> None:
             await call.answer(url=user_key)
         except Exception:
             await call.answer()
-        await send_or_answer(
+        await edit_or_send(
             call.message,
             "🔌 <b>Ваша ссылка подписки</b>\n"
             f"<code>{safe_url}</code>\n\n"
             "Скопируйте ссылку и импортируйте в приложение.\n"
-            "Если нужна помощь — нажмите «Как подключиться?».",
-            reply_markup=_direct_subscription_keyboard(),
+            "Сначала выберите устройство, затем приложение.",
+            reply_markup=_apps_pick_keyboard(),
         )
         return
 
-    await send_or_answer(
+    await edit_or_send(
         call.message,
         "🔌 <b>Ваша ссылка подписки</b>\n"
-        "Нажмите «Как подключиться?» для инструкции.",
-        reply_markup=_direct_subscription_keyboard(),
+        "Сначала выберите устройство, затем приложение.",
+        reply_markup=_apps_pick_keyboard(),
     )
     await call.answer()
 
@@ -181,32 +220,25 @@ async def connect_pick_app(call: CallbackQuery, session: AsyncSession) -> None:
     except Exception:
         await call.answer()
 
-    await send_or_answer(
+    await edit_or_send(
         call.message,
         f"Открываю <b>{APP_TITLES[app]}</b>. Если не открылось автоматически — нажмите кнопку ниже.",
         reply_markup=_open_app_keyboard(APP_TITLES[app], deep_link),
     )
 
 
+@router.callback_query(F.data.startswith("connect:device:"))
+async def connect_device_guide(call: CallbackQuery) -> None:
+    device = call.data.split(":")[-1]
+    if device not in DEVICE_GUIDES:
+        await call.answer("Раздел не найден.", show_alert=True)
+        return
+    await edit_or_send(call.message, DEVICE_GUIDES[device]["text"], reply_markup=_device_guide_keyboard(device))
+    await call.answer()
+
+
+# Backward compatibility for old messages with button "Как подключиться?"
 @router.callback_query(F.data == "connect:howto")
-async def connect_howto(call: CallbackQuery) -> None:
-    text = (
-        "🧩 <b>Как подключиться</b>\n\n"
-        "1. Скопируйте ссылку подписки из предыдущего сообщения.\n"
-        "2. Установите любое приложение ниже.\n"
-        "3. Импортируйте ссылку подписки в приложение.\n\n"
-        "<b>Hiddify</b>\n"
-        "Android: https://play.google.com/store/apps/details?id=app.hiddify.com\n"
-        "iOS: https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532\n\n"
-        "<b>V2 (v2rayNG / v2box)</b>\n"
-        "Android: https://play.google.com/store/apps/details?id=com.v2ray.ang\n"
-        "iOS: https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690\n\n"
-        "<b>Streisand</b>\n"
-        "Android: https://play.google.com/store/search?q=streisand&c=apps\n"
-        "iOS: https://apps.apple.com/us/search?term=streisand\n\n"
-        "<b>Happ</b>\n"
-        "Android: https://play.google.com/store/search?q=happ%20vpn&c=apps\n"
-        "iOS: https://apps.apple.com/us/search?term=happ%20vpn"
-    )
-    await edit_or_send(call.message, text, reply_markup=_howto_keyboard())
+async def connect_howto_legacy(call: CallbackQuery) -> None:
+    await edit_or_send(call.message, DEVICE_GUIDES["pc"]["text"], reply_markup=_device_guide_keyboard("pc"))
     await call.answer()

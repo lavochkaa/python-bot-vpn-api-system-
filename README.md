@@ -79,7 +79,8 @@ journalctl -u vpn-bot.service -f
 cd ~/apps/vpn-bot
 git pull origin main
 source .venv/bin/activate
-pip install -r requirements.txt
+
+
 alembic upgrade head
 sudo systemctl restart vpn-bot.service
 sudo systemctl status vpn-bot.service --no-pager
