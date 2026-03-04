@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.constants.subscription_pricing import DURATION_OPTIONS, TRAFFIC_OPTIONS, SUBSCRIPTION_PRICE_MATRIX
 from bot.keyboards.subscription import (
     duration_keyboard,
@@ -27,7 +28,7 @@ from bot.repositories.user import UserRepository
 from bot.repositories.vpn_key import VpnKeyRepository
 from bot.services.subscription import SubscriptionService
 from bot.states.subscription import SubscriptionStates
-from bot.utils.messages import edit_or_send
+from bot.utils.messages import edit_or_send, edit_or_send_banner
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -104,14 +105,20 @@ async def subscription_menu(call: CallbackQuery, state: FSMContext, session: Asy
     sub = await SubscriptionRepository(session).get_active(call.from_user.id)
     if _is_effectively_active(sub):
         text = f"{_format_active_subscription(sub)}\n\nМожно оформить новую подписку."
-        await edit_or_send(call.message, text, reply_markup=subscription_active_keyboard())
+        await edit_or_send_banner(
+            call.message,
+            text,
+            reply_markup=subscription_active_keyboard(),
+            banner_path=settings.message_banner_subscription_path,
+        )
     else:
         await state.clear()
         await state.set_state(SubscriptionStates.waiting_duration)
-        await edit_or_send(
+        await edit_or_send_banner(
             call.message,
             "📦 <b>Новая подписка</b>\n\nШаг 1/3: выберите срок подписки:",
             reply_markup=duration_keyboard(),
+            banner_path=settings.message_banner_subscription_new_path,
         )
     await call.answer()
 

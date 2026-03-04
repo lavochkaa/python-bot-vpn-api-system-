@@ -131,6 +131,7 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
         traffic = traffic_gb or settings.hiddify_default_traffic_gb
         days = duration_days or settings.hiddify_default_duration_days
         now_iso = datetime.now(timezone.utc).isoformat()
+        reset_mode = (settings.hiddify_usage_reset_mode or "monthly").strip().lower()
 
         username = f"user_{user_id}"
         base = {"name": f"{profile_name}"}
@@ -171,7 +172,25 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                 **base,
                 "usage_limit_GB": int(traffic),
                 "package_days": int(days),
-                "mode": "no_reset",
+                "mode": "monthly" if reset_mode == "monthly" else "no_reset",
+            },
+            {
+                **base,
+                "usage_limit_GB": int(traffic),
+                "package_days": int(days),
+                "reset_mode": "monthly" if reset_mode == "monthly" else "none",
+            },
+            {
+                **base,
+                "usage_limit_GB": int(traffic),
+                "package_days": int(days),
+                "usage_reset_strategy": "monthly" if reset_mode == "monthly" else "no_reset",
+            },
+            {
+                **base,
+                "usage_limit_GB": int(traffic),
+                "package_days": int(days),
+                "reset_usage_period": "month" if reset_mode == "monthly" else "never",
             },
             {
                 **base,

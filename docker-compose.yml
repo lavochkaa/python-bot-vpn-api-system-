@@ -19,17 +19,5 @@ services:
       DATABASE_URL: postgresql+asyncpg://vpnbot:secret@db:5432/vpnbot
     command: python -m bot.main
 
-  device_limit:
-    build: .
-    env_file: .env
-    depends_on:
-      - db
-    environment:
-      DATABASE_URL: postgresql+asyncpg://vpnbot:secret@db:5432/vpnbot
-      ACCESS_LOG_PATH: ${ACCESS_LOG_PATH:-/var/log/xray/access.log}
-    command: python -m device_limit.main
-    volumes:
-      - ${ACCESS_LOG_DIR:-/var/log/xray}:/var/log/xray:ro
-
 volumes:
   pgdata:

@@ -26,10 +26,23 @@ class Settings(BaseSettings):
     hiddify_subscription_url_template: str = ""
     hiddify_default_traffic_gb: int = 50
     hiddify_default_duration_days: int = 30
+    hiddify_usage_reset_mode: str = "monthly"
     payment_provider_token: str = "TEST:TOKEN"
     payment_currency: str = "RUB"
+    payment_provider_data: str = ""
+    yookassa_shop_id: str = ""
+    yookassa_secret_key: str = ""
+    yookassa_api_base: str = "https://api.yookassa.ru/v3"
+    yookassa_return_url: str = "https://t.me"
     admin_ids: str = ""
     message_banner_path: str = "5554EDCD-AA4B-4150-A75C-7A75E0155E5A.PNG"
+    message_banner_main_path: str = ""
+    message_banner_subscription_path: str = ""
+    message_banner_subscription_new_path: str = ""
+    message_banner_connect_path: str = ""
+    message_banner_balance_path: str = ""
+    message_banner_support_path: str = ""
+    message_banner_payment_success_path: str = ""
     message_banner_file_id: str = ""
     connect_guide_url: str = "https://teletype.in/@crystal-vpn/connect"
     # TODO(DEEPLINK): replace templates with production-ready client schemes if needed.

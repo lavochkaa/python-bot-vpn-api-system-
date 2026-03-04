@@ -13,7 +13,7 @@ from bot.keyboards.support import support_keyboard
 from bot.repositories.support import SupportRepository
 from bot.services.support import SupportService
 from bot.states.support import SupportStates
-from bot.utils.messages import edit_or_send, send_or_answer, send_to_chat
+from bot.utils.messages import edit_or_send, edit_or_send_banner, send_or_answer, send_to_chat
 
 router = Router()
 PAGE_SIZE = 10
@@ -101,10 +101,11 @@ async def _notify_admins_about_ticket_message(
 
 @router.callback_query(F.data == "menu:support")
 async def support_menu(call: CallbackQuery) -> None:
-    await edit_or_send(
+    await edit_or_send_banner(
         call.message,
         "🆘 <b>Поддержка</b>\n\nВыберите действие:",
         reply_markup=support_keyboard(),
+        banner_path=settings.message_banner_support_path,
     )
     await call.answer()
 

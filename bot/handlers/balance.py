@@ -1,36 +1,31 @@
 from decimal import Decimal, InvalidOperation
-from uuid import uuid4
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.db.models import PaymentKind
-from bot.keyboards.balance import amount_keyboard, custom_amount_keyboard, topup_keyboard
+from bot.keyboards.balance import amount_keyboard, custom_amount_keyboard, payment_link_keyboard, topup_keyboard
+from bot.providers.payment.factory import build_payment_provider
 from bot.repositories.ledger import BalanceLedgerRepository
 from bot.repositories.payment import PaymentRepository
 from bot.repositories.user import UserRepository
 from bot.services.payment import PaymentService
 from bot.states.balance import TopUpStates
-from bot.utils.messages import edit_or_send, send_or_answer
+from bot.utils.messages import edit_or_send, edit_or_send_banner, send_or_answer
 
 router = Router()
-
-
-def _to_minor_units(amount: Decimal) -> int:
-    return int((amount * Decimal("100")).quantize(Decimal("1")))
 
 
 @router.callback_query(F.data == "menu:balance")
 async def balance_menu(call: CallbackQuery, session: AsyncSession) -> None:
     user = await UserRepository(session).get_by_tg_id(call.from_user.id)
-    await edit_or_send(
+    await edit_or_send_banner(
         call.message,
         f"💳 Ваш баланс: <b>{user.balance} ₽</b>",
         reply_markup=topup_keyboard(),
+        banner_path=settings.message_banner_balance_path,
     )
     await call.answer()
 
@@ -85,63 +80,65 @@ async def process_custom_amount(message: Message, state: FSMContext, session: As
 async def _send_topup_invoice(message: Message, user_id: int, state: FSMContext, session: AsyncSession) -> None:
     data = await state.get_data()
     amount = Decimal(data["final_amount"])
-    payload = f"topup:{user_id}:{uuid4().hex}"
-
     payment_service = PaymentService(
         PaymentRepository(session),
         BalanceLedgerRepository(session),
         UserRepository(session),
-        provider=None,  # Telegram Payments path does not use external provider adapter.
+        provider=build_payment_provider(),
     )
-    await payment_service.create_pending_payment(
-        user_id=user_id,
-        amount=amount,
-        provider_payload=payload,
-        promo_code_id=None,
-        kind=PaymentKind.topup,
-    )
-
     try:
-        await message.bot.send_invoice(
-            chat_id=message.chat.id,
-            title="Пополнение баланса VPN-бота",
-            description=f"Пополнение на {amount} ₽",
-            payload=payload,
-            provider_token=settings.payment_provider_token,
-            currency=settings.payment_currency,
-            prices=[LabeledPrice(label="Пополнение", amount=_to_minor_units(amount))],
-        )
-    except TelegramAPIError:
-        await edit_or_send(message, "Не удалось создать счет. Проверьте PAYMENT_PROVIDER_TOKEN.")
-    finally:
+        invoice = await payment_service.initiate_topup(user_id=user_id, amount=amount, promo_code_id=None)
+    except ValueError as exc:
+        await edit_or_send(message, f"Не удалось создать платеж: {exc}")
         await state.clear()
-
-
-@router.pre_checkout_query()
-async def pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
-    await pre_checkout_query.answer(ok=True)
-
-
-@router.message(F.successful_payment)
-async def successful_payment(message: Message, session: AsyncSession) -> None:
-    successful = message.successful_payment
-    payment_service = PaymentService(
-        PaymentRepository(session),
-        BalanceLedgerRepository(session),
-        UserRepository(session),
-        provider=None,
-    )
-    ok, payment, _processed_now = await payment_service.confirm_telegram_payment(
-        payload=successful.invoice_payload,
-        telegram_charge_id=successful.telegram_payment_charge_id,
-    )
-    if not ok or not payment:
-        await send_or_answer(message, "Платеж получен, но не удалось обработать его автоматически.")
         return
 
-    user = await UserRepository(session).get_by_tg_id(payment.user_id)
-    await send_or_answer(
+    if not invoice.pay_url:
+        await edit_or_send(message, "Платеж создан, но ссылка на оплату не получена.")
+        await state.clear()
+        return
+
+    await edit_or_send(
         message,
-        f"✅ Оплата подтверждена.\n"
-        f"Баланс: <b>{user.balance} ₽</b>"
+        (
+            f"Сумма к оплате: <b>{amount} ₽</b>\n\n"
+            "1) Нажмите «Оплатить».\n"
+            "2) После оплаты нажмите «Проверить оплату»."
+        ),
+        reply_markup=payment_link_keyboard(pay_url=invoice.pay_url, invoice_id=invoice.invoice_id),
     )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("balance:check:"))
+async def check_topup_payment(call: CallbackQuery, session: AsyncSession) -> None:
+    invoice_id = call.data.removeprefix("balance:check:").strip()
+    if not invoice_id:
+        await call.answer("Некорректный id платежа.", show_alert=True)
+        return
+
+    payment_service = PaymentService(
+        PaymentRepository(session),
+        BalanceLedgerRepository(session),
+        UserRepository(session),
+        provider=build_payment_provider(),
+    )
+    try:
+        ok = await payment_service.confirm_payment(invoice_id)
+    except ValueError as exc:
+        await call.answer("Ошибка проверки платежа.", show_alert=True)
+        await edit_or_send(call.message, f"Не удалось проверить платеж: {exc}")
+        return
+
+    if not ok:
+        await call.answer("Платеж еще не подтвержден.", show_alert=True)
+        return
+
+    user = await UserRepository(session).get_by_tg_id(call.from_user.id)
+    await edit_or_send_banner(
+        call.message,
+        f"✅ Оплата подтверждена.\nБаланс: <b>{user.balance} ₽</b>",
+        reply_markup=topup_keyboard(),
+        banner_path=settings.message_banner_payment_success_path,
+    )
+    await call.answer("Оплата подтверждена")

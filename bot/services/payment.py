@@ -3,7 +3,7 @@ from bot.db.models import BalanceLedger, Payment, PaymentKind, PaymentStatus
 from bot.repositories.ledger import BalanceLedgerRepository
 from bot.repositories.payment import PaymentRepository
 from bot.repositories.user import UserRepository
-from bot.providers.payment.base import PaymentProvider
+from bot.providers.payment.base import PaymentInvoice, PaymentProvider
 
 
 class PaymentService:
@@ -21,21 +21,21 @@ class PaymentService:
 
     async def initiate_topup(
         self, user_id: int, amount: Decimal, promo_code_id: int | None = None
-    ) -> str:
+    ) -> PaymentInvoice:
         """Create pending payment record and return invoice ID/URL."""
         if self.provider is None:
             raise ValueError("Payment provider is not configured.")
-        invoice_id = await self.provider.create_invoice(user_id, amount)
+        invoice = await self.provider.create_invoice(user_id, amount)
         payment = Payment(
             user_id=user_id,
             amount=amount,
             kind=PaymentKind.topup,
             status=PaymentStatus.pending,
-            provider_payload=invoice_id,
+            provider_payload=invoice.invoice_id,
             promo_code_id=promo_code_id,
         )
         await self.payment_repo.save(payment)
-        return invoice_id
+        return invoice
 
     async def create_pending_payment(
         self,

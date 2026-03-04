@@ -1,8 +1,4 @@
-<<<<<<< ours
 """add user device limits and active device sessions
-=======
-"""legacy placeholder for removed device limiter changes
->>>>>>> theirs
 
 Revision ID: 0006
 Revises: 0005
@@ -11,12 +7,9 @@ Create Date: 2026-03-02 01:30:00.000000
 
 from __future__ import annotations
 
-<<<<<<< ours
 from alembic import op
 import sqlalchemy as sa
 
-=======
->>>>>>> theirs
 
 revision = "0006"
 down_revision = "0005"
@@ -24,7 +17,6 @@ branch_labels = None
 depends_on = None
 
 
-<<<<<<< ours
 def _column_names(table_name: str) -> set[str]:
     inspector = sa.inspect(op.get_bind())
     return {col["name"] for col in inspector.get_columns(table_name)}
@@ -99,14 +91,3 @@ def downgrade() -> None:
         op.drop_column("users", "subscription_uuid")
     if "max_devices" in user_columns:
         op.drop_column("users", "max_devices")
-=======
-def upgrade() -> None:
-    # Intentionally left blank. Device limiter code was archived.
-    return None
-
-
-def downgrade() -> None:
-    # Intentionally left blank. Device limiter code was archived.
-    return None
-
->>>>>>> theirs

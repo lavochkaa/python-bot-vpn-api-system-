@@ -5,7 +5,7 @@ import re
 
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram import Bot
-from aiogram.types import FSInputFile, Message
+from aiogram.types import FSInputFile, InputMediaPhoto, Message
 
 from bot.config import settings
 
@@ -54,6 +54,17 @@ def _banner_file() -> FSInputFile | None:
     path = Path(settings.message_banner_path)
     if not settings.message_banner_path.strip():
         return None
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.exists() or not path.is_file():
+        return None
+    return FSInputFile(path)
+
+
+def _banner_file_by_path(banner_path: str | None) -> FSInputFile | None:
+    if not banner_path:
+        return None
+    path = Path(banner_path.strip())
     if not path.is_absolute():
         path = Path.cwd() / path
     if not path.exists() or not path.is_file():
@@ -280,3 +291,71 @@ async def edit_or_send(message: Message, text: str, reply_markup=None) -> None:
             await message.answer(_short_text(text), reply_markup=reply_markup)
             return
         raise
+
+
+async def send_or_answer_banner(message: Message, text: str, reply_markup=None, banner_path: str | None = None) -> None:
+    banner = _banner_file_by_path(banner_path)
+    if not banner or len(text) > _CAPTION_MAX_LEN:
+        await send_or_answer(message, text, reply_markup=reply_markup)
+        return
+    try:
+        await message.answer_photo(
+            photo=banner,
+            caption=text,
+            reply_markup=reply_markup,
+            request_timeout=_PHOTO_TIMEOUT_SECONDS,
+        )
+    except (TelegramBadRequest, TelegramNetworkError, OSError):
+        await send_or_answer(message, text, reply_markup=reply_markup)
+
+
+async def edit_or_send_banner(message: Message, text: str, reply_markup=None, banner_path: str | None = None) -> None:
+    banner = _banner_file_by_path(banner_path)
+    if not banner or len(text) > _CAPTION_MAX_LEN:
+        await edit_or_send(message, text, reply_markup=reply_markup)
+        return
+
+    # Preferred path: replace media in-place so UI stays in the same message.
+    try:
+        await message.edit_media(
+            media=InputMediaPhoto(
+                media=banner,
+                caption=text,
+            ),
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            return
+    except TelegramNetworkError:
+        pass
+
+    # Fallback: still try to keep everything in the same message via text edit.
+    try:
+        await message.edit_text(
+            _short_text(text),
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            return
+        if "can't parse entities" in err:
+            safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
+            try:
+                await message.edit_text(_short_text(safe_plain), reply_markup=reply_markup)
+                return
+            except TelegramBadRequest:
+                pass
+    except TelegramNetworkError:
+        pass
+
+    # Last-resort fallback keeps old helper behavior.
+    try:
+        await edit_or_send(message, text, reply_markup=reply_markup)
+    except Exception:
+        # Do not create extra noise if Telegram refuses edits on this specific message.
+        return

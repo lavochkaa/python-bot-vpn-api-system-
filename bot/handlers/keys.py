@@ -16,7 +16,7 @@ from bot.config import settings
 from bot.repositories.subscription import SubscriptionRepository
 from bot.repositories.user import UserRepository
 from bot.repositories.vpn_key import VpnKeyRepository
-from bot.utils.messages import edit_or_send
+from bot.utils.messages import edit_or_send, edit_or_send_banner
 
 router = Router()
 UUID_RE = re.compile(
@@ -175,10 +175,11 @@ async def connect_apps(call: CallbackQuery, session: AsyncSession) -> None:
         builder = InlineKeyboardBuilder()
         builder.button(text="🔙 В меню", callback_data="menu:main")
         builder.adjust(1)
-        await edit_or_send(
+        await edit_or_send_banner(
             call.message,
             "🔌 Активная подписка не найдена.\n\nОформите подписку, чтобы получить подключение.",
             reply_markup=builder.as_markup(),
+            banner_path=settings.message_banner_connect_path,
         )
         await call.answer()
         return
@@ -189,11 +190,12 @@ async def connect_apps(call: CallbackQuery, session: AsyncSession) -> None:
         builder = InlineKeyboardBuilder()
         builder.button(text="🔙 В меню", callback_data="menu:main")
         builder.adjust(1)
-        await edit_or_send(
+        await edit_or_send_banner(
             call.message,
             "🔌 Подписка активна, но конфиг пока не готов.\n"
             "Попробуйте позже или обратитесь в поддержку.",
             reply_markup=builder.as_markup(),
+            banner_path=settings.message_banner_connect_path,
         )
         await call.answer()
         return
@@ -215,21 +217,24 @@ async def connect_apps(call: CallbackQuery, session: AsyncSession) -> None:
             await call.answer(url=user_key)
         except Exception:
             await call.answer()
-        await edit_or_send(
+        await edit_or_send_banner(
             call.message,
             "🔌 <b>Ваша ссылка подписки</b>\n"
             f"<code>{safe_url}</code>\n\n"
             "Скопируйте ссылку и импортируйте в приложение.\n"
-            "Сначала выберите устройство, затем приложение.",
+            "Сначала выберите устройство, затем приложение.\n"
+            "Всего можно подключить 3 устройства одновременно.",
             reply_markup=_apps_pick_keyboard(),
+            banner_path=settings.message_banner_connect_path,
         )
         return
 
-    await edit_or_send(
+    await edit_or_send_banner(
         call.message,
         "🔌 <b>Ваша ссылка подписки</b>\n"
         "Сначала выберите устройство, затем приложение.",
         reply_markup=_apps_pick_keyboard(),
+        banner_path=settings.message_banner_connect_path,
     )
     await call.answer()
 

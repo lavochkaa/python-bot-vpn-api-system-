@@ -9,14 +9,19 @@ from bot.repositories.user import UserRepository
 from bot.keyboards.main_menu import channel_check_keyboard, main_menu_keyboard
 from bot.utils.channel_subscription import check_channel_subscription
 from bot.utils.formatters import format_main_menu
-from bot.utils.messages import edit_or_send, send_or_answer
+from bot.utils.messages import edit_or_send_banner, send_or_answer_banner
 
 router = Router()
 
 
 async def _safe_edit_text(call: CallbackQuery, text: str, reply_markup) -> None:
     try:
-        await edit_or_send(call.message, text, reply_markup=reply_markup)
+        await edit_or_send_banner(
+            call.message,
+            text,
+            reply_markup=reply_markup,
+            banner_path=settings.message_banner_main_path,
+        )
     except TelegramBadRequest:
         pass
 
@@ -34,13 +39,14 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
             )
         elif reason == "chat_not_found":
             details = "\n\n⚠️ Канал не найден. Проверьте настройки канала."
-        await send_or_answer(
+        await send_or_answer_banner(
             message,
             "Чтобы продолжить использование бота, подпишитесь на Telegram-канал.\n\n"
             f"Канал: {settings.normalized_channel_username}\n"
             "После подписки нажмите «✅ Проверить»."
             f"{details}",
             reply_markup=channel_check_keyboard(),
+            banner_path=settings.message_banner_main_path,
         )
         return
 
@@ -50,10 +56,11 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
         username=message.from_user.username,
         full_name=message.from_user.full_name,
     )
-    await send_or_answer(
+    await send_or_answer_banner(
         message,
         await format_main_menu(user, session),
         reply_markup=main_menu_keyboard(),
+        banner_path=settings.message_banner_main_path,
     )
 
 

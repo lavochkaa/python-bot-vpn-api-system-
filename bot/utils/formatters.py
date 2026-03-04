@@ -24,6 +24,13 @@ async def format_subscription_for_user(sub: Subscription | None, show_type: bool
     status = "✅ активна" if is_active else "❌ истекла"
     status_code = "active" if is_active else "expired"
     expires_str = expires.strftime("%d.%m.%Y") if expires else "—"
+    remaining_text = "истекла"
+    if is_active and expires is not None:
+        delta = expires - now
+        remaining_days = delta.days
+        if delta.seconds > 0 or delta.microseconds > 0:
+            remaining_days += 1
+        remaining_text = f"осталось {max(0, remaining_days)} дн."
     plan_name = sub.plan.name if sub.plan else f"ID #{sub.plan_id}"
     traffic_title = f"{sub.traffic_gb} ГБ" if sub.traffic_gb else "—"
     duration_title = f"{sub.duration_days} дн." if sub.duration_days else "—"
@@ -32,7 +39,7 @@ async def format_subscription_for_user(sub: Subscription | None, show_type: bool
         f"Срок: <b>{duration_title}</b>\n"
         f"Трафик: <b>{traffic_title}</b>\n"
         f"Статус: {status} ({status_code})\n"
-        f"Действует до: <b>{expires_str}</b>"
+        f"Действует до: <b>{expires_str}</b> ({remaining_text})"
     ]
     if show_type:
         plan_type_title = {"phone": "PHONE", "pc": "PC"}.get((sub.plan_type or "").lower(), "—")

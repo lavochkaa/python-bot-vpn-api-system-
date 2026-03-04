@@ -26,3 +26,12 @@ def custom_amount_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🔙 Назад", callback_data="balance:topup")
     builder.adjust(1)
     return builder.as_markup()
+
+
+def payment_link_keyboard(pay_url: str, invoice_id: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💳 Оплатить", url=pay_url)
+    builder.button(text="✅ Проверить оплату", callback_data=f"balance:check:{invoice_id}")
+    builder.button(text="🔙 К балансу", callback_data="menu:balance")
+    builder.adjust(1)
+    return builder.as_markup()
