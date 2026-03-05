@@ -13,7 +13,14 @@ from bot.keyboards.support import support_keyboard
 from bot.repositories.support import SupportRepository
 from bot.services.support import SupportService
 from bot.states.support import SupportStates
-from bot.utils.messages import edit_or_send, edit_or_send_banner, send_or_answer, send_to_chat
+from bot.utils.messages import (
+    edit_or_send,
+    edit_or_send_banner,
+    send_or_answer,
+    send_or_answer_banner,
+    send_to_chat,
+    send_to_chat_banner,
+)
 
 router = Router()
 PAGE_SIZE = 10
@@ -89,11 +96,12 @@ async def _notify_admins_about_ticket_message(
     )
     for admin_id in settings.admin_id_set:
         try:
-            await send_to_chat(
+            await send_to_chat_banner(
                 message.bot,
                 admin_id,
                 payload,
                 reply_markup=_admin_ticket_link_keyboard(ticket_id),
+                banner_path=settings.message_banner_support_path,
             )
         except TelegramAPIError:
             continue
@@ -260,11 +268,12 @@ async def create_ticket(message: Message, state: FSMContext, session: AsyncSessi
         return
     service = SupportService(SupportRepository(session))
     ticket = await service.create_ticket(message.from_user.id, text)
-    await send_or_answer(
+    await send_or_answer_banner(
         message,
         f"✅ Обращение создано.\n"
         f"Номер тикета: <b>#{ticket.id}</b>",
         reply_markup=_user_ticket_link_keyboard(ticket.id),
+        banner_path=settings.message_banner_support_path,
     )
     await _notify_admins_about_ticket_message(
         message=message,

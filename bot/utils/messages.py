@@ -198,6 +198,29 @@ async def send_to_chat(bot: Bot, chat_id: int, text: str, reply_markup=None) -> 
         raise
 
 
+async def send_to_chat_banner(
+    bot: Bot,
+    chat_id: int,
+    text: str,
+    reply_markup=None,
+    banner_path: str | None = None,
+) -> None:
+    banner = _banner_file_by_path(banner_path)
+    if not banner or len(text) > _CAPTION_MAX_LEN:
+        await send_to_chat(bot, chat_id, text, reply_markup=reply_markup)
+        return
+    try:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=banner,
+            caption=text,
+            reply_markup=reply_markup,
+            request_timeout=_PHOTO_TIMEOUT_SECONDS,
+        )
+    except (TelegramBadRequest, TelegramNetworkError, OSError):
+        await send_to_chat(bot, chat_id, text, reply_markup=reply_markup)
+
+
 async def edit_or_send(message: Message, text: str, reply_markup=None) -> None:
     global _banner_file_id, _banner_disabled
     if len(text) > _CAPTION_MAX_LEN:
