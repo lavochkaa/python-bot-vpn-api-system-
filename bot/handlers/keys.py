@@ -207,9 +207,11 @@ async def connect_apps(call: CallbackQuery, session: AsyncSession) -> None:
         user_repo = UserRepository(session)
         user = await user_repo.get_by_tg_id(call.from_user.id)
         if user and user.subscription_uuid != extracted_uuid:
-            user.subscription_uuid = extracted_uuid
-            session.add(user)
-            await session.commit()
+            owner = await user_repo.get_by_subscription_uuid(extracted_uuid)
+            if owner is None or owner.id == user.id:
+                user.subscription_uuid = extracted_uuid
+                session.add(user)
+                await session.commit()
 
     if user_key.startswith(("https://", "http://")):
         safe_url = user_key.replace("<", "").replace(">", "")
@@ -263,9 +265,11 @@ async def connect_pick_app(call: CallbackQuery, session: AsyncSession) -> None:
         user_repo = UserRepository(session)
         user = await user_repo.get_by_tg_id(call.from_user.id)
         if user and user.subscription_uuid != extracted_uuid:
-            user.subscription_uuid = extracted_uuid
-            session.add(user)
-            await session.commit()
+            owner = await user_repo.get_by_subscription_uuid(extracted_uuid)
+            if owner is None or owner.id == user.id:
+                user.subscription_uuid = extracted_uuid
+                session.add(user)
+                await session.commit()
 
     deep_link = _build_deep_link(app, user_key)
     open_url = _telegram_safe_open_url(deep_link)

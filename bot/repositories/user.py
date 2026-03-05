@@ -16,6 +16,12 @@ class UserRepository(BaseRepository[User]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_subscription_uuid(self, subscription_uuid: str) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.subscription_uuid == subscription_uuid)
+        )
+        return result.scalar_one_or_none()
+
     async def get_or_create(
         self, tg_id: int, username: str | None, full_name: str | None
     ) -> tuple[User, bool]:

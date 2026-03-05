@@ -136,7 +136,16 @@ class SubscriptionService:
             payload_json = json.dumps(key_data.meta, ensure_ascii=False) if key_data.meta else None
             subscription_uuid = _uuid_from_meta(key_data.meta) or _uuid_from_key(key_data.key)
             if subscription_uuid:
-                user.subscription_uuid = subscription_uuid
+                owner = await self.user_repo.get_by_subscription_uuid(subscription_uuid)
+                if owner is None or owner.id == user.id:
+                    user.subscription_uuid = subscription_uuid
+                else:
+                    logger.warning(
+                        "Skip assigning duplicate subscription_uuid=%s to user_id=%s (already owned by user_id=%s)",
+                        subscription_uuid,
+                        user.id,
+                        owner.id,
+                    )
 
             user.balance -= final_price
             session.add(
