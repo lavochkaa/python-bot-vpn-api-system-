@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
@@ -19,7 +19,6 @@ from bot.keyboards.admin import (
     admin_promo_details_keyboard,
     admin_promo_edit_keyboard,
     admin_promo_target_keyboard,
-    admin_promo_type_keyboard,
     admin_promos_keyboard,
     admin_promos_list_keyboard,
     admin_sign_keyboard,
@@ -54,8 +53,6 @@ def _parse_optional_date(value: str) -> datetime | None:
 def _fmt_promo_short(promo: PromoCode) -> str:
     limit = promo.max_activations if promo.max_activations is not None else "∞"
     value = f"{promo.discount_value}%"
-    if promo.discount_type == DiscountType.fixed:
-        value = f"{promo.discount_value}₽"
     target = promo.target.value if promo.target else "both"
     return f"{promo.code} — {value} — {target} — {promo.activations_count}/{limit}"
 
@@ -101,6 +98,43 @@ def _render_ticket_messages(messages) -> str:
 def _preview(text: str, limit: int = 120) -> str:
     normalized = " ".join(text.split())
     return normalized if len(normalized) <= limit else normalized[:limit] + "..."
+
+
+async def _set_admin_anchor(state: FSMContext, message: Message) -> None:
+    await state.update_data(admin_chat_id=message.chat.id, admin_message_id=message.message_id)
+
+
+async def _admin_edit_message(message: Message, state: FSMContext, text: str, reply_markup=None) -> None:
+    data = await state.get_data()
+    chat_id = data.get("admin_chat_id")
+    message_id = data.get("admin_message_id")
+    if not chat_id or not message_id:
+        sent = await message.answer(text, reply_markup=reply_markup)
+        await _set_admin_anchor(state, sent)
+        return
+    try:
+        await message.bot.edit_message_text(
+            chat_id=int(chat_id),
+            message_id=int(message_id),
+            text=text,
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            return
+    except TelegramNetworkError:
+        return
+    try:
+        await message.bot.edit_message_caption(
+            chat_id=int(chat_id),
+            message_id=int(message_id),
+            caption=text,
+            reply_markup=reply_markup,
+        )
+    except (TelegramBadRequest, TelegramNetworkError):
+        return
 
 
 async def _render_user_profile(user_id: int, session: AsyncSession) -> tuple[str, bool]:
@@ -161,15 +195,15 @@ async def _render_user_profile_with_draft(
 
 
 @router.message(Command("admin"))
-async def admin_panel(message: Message) -> None:
+async def admin_panel(message: Message, state: FSMContext) -> None:
     if not _is_admin(message.from_user.id):
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
-    await send_or_answer(
-        message,
+    sent = await message.answer(
         "⚙️ <b>Админ-панель</b>\n\nВыберите раздел:",
         reply_markup=admin_menu_keyboard(),
     )
+    await _set_admin_anchor(state, sent)
 
 
 @router.callback_query(F.data == "admin:menu")
@@ -177,6 +211,7 @@ async def admin_menu(call: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     await state.clear()
     await edit_or_send(
         call.message,
@@ -191,6 +226,7 @@ async def admin_promos(call: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     await state.clear()
     await edit_or_send(
         call.message,
@@ -205,6 +241,7 @@ async def admin_promos_create(call: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     await state.clear()
     await state.set_state(AdminTicketStates.waiting_promo_code)
     await edit_or_send(
@@ -219,37 +256,32 @@ async def admin_promos_create(call: CallbackQuery, state: FSMContext) -> None:
 async def admin_promos_code_input(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     code = (message.text or "").strip().upper()
     if not code:
-        await send_or_answer(message, "Код не может быть пустым.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Код не может быть пустым.", reply_markup=admin_back_keyboard())
         return
     if await PromoRepository(session).get_by_code(code):
-        await send_or_answer(message, "Промокод уже существует.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Промокод уже существует.", reply_markup=admin_back_keyboard())
         return
-    await state.update_data(promo_code=code)
-    await send_or_answer(
+    await state.update_data(promo_code=code, discount_type="percent")
+    await state.set_state(AdminTicketStates.waiting_promo_target)
+    await _admin_edit_message(
         message,
-        "Выберите тип скидки:",
-        reply_markup=admin_promo_type_keyboard(),
+        "Тип скидки: <b>процент</b>.\nВыберите назначение промокода:",
+        reply_markup=admin_promo_target_keyboard(),
     )
 
 
 @router.callback_query(F.data.startswith("admin:promo:type:"))
 async def admin_promos_type_pick(call: CallbackQuery, state: FSMContext) -> None:
+    # Legacy callback compatibility: type is always percent now.
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
-    discount_type = call.data.split(":")[-1]
-    if discount_type not in {"percent", "fixed"}:
-        await call.answer("Неверный тип", show_alert=True)
-        return
-    data = await state.get_data()
-    if not data.get("promo_code"):
-        await call.answer("Сначала введите code", show_alert=True)
-        return
-    await state.update_data(discount_type=discount_type)
+    await _set_admin_anchor(state, call.message)
+    await state.update_data(discount_type="percent")
     await state.set_state(AdminTicketStates.waiting_promo_target)
     await edit_or_send(call.message, "Выберите назначение промокода:", reply_markup=admin_promo_target_keyboard())
     await call.answer()
@@ -260,19 +292,18 @@ async def admin_promos_target_pick(call: CallbackQuery, state: FSMContext) -> No
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     target = call.data.split(":")[-1]
     if target not in {"balance", "subscription"}:
         await call.answer("Неверное назначение", show_alert=True)
         return
     data = await state.get_data()
-    if not data.get("promo_code") or data.get("discount_type") not in {"percent", "fixed"}:
-        await call.answer("Сначала заполните код и тип", show_alert=True)
+    if not data.get("promo_code"):
+        await call.answer("Сначала заполните код", show_alert=True)
         return
     await state.update_data(promo_target=target)
     await state.set_state(AdminTicketStates.waiting_promo_value)
-    discount_type = data.get("discount_type")
-    prompt = "Введите value в % (1..100):" if discount_type == "percent" else "Введите value в ₽:"
-    await edit_or_send(call.message, prompt, reply_markup=admin_back_keyboard())
+    await edit_or_send(call.message, "Введите value в % (1..100):", reply_markup=admin_back_keyboard())
     await call.answer()
 
 
@@ -280,25 +311,24 @@ async def admin_promos_target_pick(call: CallbackQuery, state: FSMContext) -> No
 async def admin_promos_value_input(message: Message, state: FSMContext) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     data = await state.get_data()
-    discount_type = data.get("discount_type")
     raw = (message.text or "").strip().replace(",", ".")
     try:
         value = Decimal(raw)
     except Exception:
-        await send_or_answer(message, "Введите число.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Введите число.", reply_markup=admin_back_keyboard())
         return
     if value <= 0:
-        await send_or_answer(message, "Value должно быть > 0.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Value должно быть > 0.", reply_markup=admin_back_keyboard())
         return
-    if discount_type == "percent" and value > 100:
-        await send_or_answer(message, "Процент должен быть 1..100.", reply_markup=admin_back_keyboard())
+    if value > 100:
+        await _admin_edit_message(message, state, "Процент должен быть 1..100.", reply_markup=admin_back_keyboard())
         return
     await state.update_data(discount_value=str(value))
     await state.set_state(AdminTicketStates.waiting_promo_expires)
-    await send_or_answer(
+    await _admin_edit_message(
         message,
         "Введите expiresAt в формате YYYY-MM-DD или '-' для пропуска:",
         reply_markup=admin_back_keyboard(),
@@ -309,16 +339,16 @@ async def admin_promos_value_input(message: Message, state: FSMContext) -> None:
 async def admin_promos_expires_input(message: Message, state: FSMContext) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     try:
         expires_at = _parse_optional_date((message.text or "").strip())
     except Exception:
-        await send_or_answer(message, "Неверная дата. Нужен формат YYYY-MM-DD или '-'.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Неверная дата. Нужен формат YYYY-MM-DD или '-'.", reply_markup=admin_back_keyboard())
         return
     await state.update_data(promo_expires_at=expires_at.isoformat() if expires_at else "")
     await state.set_state(AdminTicketStates.waiting_promo_limit)
-    await send_or_answer(
+    await _admin_edit_message(
         message,
         "Введите usageLimit (целое > 0) или '-' для пропуска:",
         reply_markup=admin_back_keyboard(),
@@ -329,7 +359,7 @@ async def admin_promos_expires_input(message: Message, state: FSMContext) -> Non
 async def admin_promos_limit_input(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     raw = (message.text or "").strip().lower()
     usage_limit: int | None
@@ -338,7 +368,7 @@ async def admin_promos_limit_input(message: Message, state: FSMContext, session:
     elif raw.isdigit() and int(raw) > 0:
         usage_limit = int(raw)
     else:
-        await send_or_answer(message, "Введите целое > 0 или '-'.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Введите целое > 0 или '-'.", reply_markup=admin_back_keyboard())
         return
 
     data = await state.get_data()
@@ -349,11 +379,11 @@ async def admin_promos_limit_input(message: Message, state: FSMContext, session:
     if (
         not code
         or target_raw not in {"balance", "subscription"}
-        or discount_type_raw not in {"percent", "fixed"}
+        or discount_type_raw != "percent"
         or not discount_value_raw
     ):
         await state.clear()
-        await send_or_answer(message, "Сессия истекла. Начните заново.")
+        await _admin_edit_message(message, state, "Сессия истекла. Начните заново.")
         return
     expires_raw = data.get("promo_expires_at", "")
     expires_at = datetime.fromisoformat(expires_raw) if expires_raw else None
@@ -369,7 +399,7 @@ async def admin_promos_limit_input(message: Message, state: FSMContext, session:
     )
     await PromoRepository(session).save(promo)
     await state.clear()
-    await send_or_answer(
+    await _admin_edit_message(
         message,
         f"✅ Промокод создан.\n\n{_fmt_promo_card(promo)}",
         reply_markup=admin_promo_details_keyboard(promo.id, active=promo.is_active),
@@ -486,6 +516,7 @@ async def admin_promo_edit_value_start(call: CallbackQuery, state: FSMContext) -
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     promo_id = int(call.data.split(":")[-1])
     await state.set_state(AdminTicketStates.waiting_promo_edit_value)
     await state.update_data(promo_edit_id=promo_id)
@@ -497,30 +528,31 @@ async def admin_promo_edit_value_start(call: CallbackQuery, state: FSMContext) -
 async def admin_promo_edit_value_save(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     raw = (message.text or "").strip().replace(",", ".")
     try:
         value = Decimal(raw)
     except Exception:
-        await send_or_answer(message, "Введите корректное число.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Введите корректное число.", reply_markup=admin_back_keyboard())
         return
     promo_id = int((await state.get_data()).get("promo_edit_id", 0))
     promo = await PromoRepository(session).get(promo_id)
     if not promo:
         await state.clear()
-        await send_or_answer(message, "Промокод не найден.")
+        await _admin_edit_message(message, state, "Промокод не найден.")
         return
     if value <= 0:
-        await send_or_answer(message, "Value должно быть > 0.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Value должно быть > 0.", reply_markup=admin_back_keyboard())
         return
-    if promo.discount_type == DiscountType.percent and value > 100:
-        await send_or_answer(message, "Для % значение должно быть 1..100.", reply_markup=admin_back_keyboard())
+    if value > 100:
+        await _admin_edit_message(message, state, "Для % значение должно быть 1..100.", reply_markup=admin_back_keyboard())
         return
+    promo.discount_type = DiscountType.percent
     promo.discount_value = value
     await PromoRepository(session).save(promo)
     await state.clear()
-    await send_or_answer(
+    await _admin_edit_message(
         message,
         _fmt_promo_card(promo),
         reply_markup=admin_promo_details_keyboard(promo.id, active=promo.is_active),
@@ -532,6 +564,7 @@ async def admin_promo_edit_expires_start(call: CallbackQuery, state: FSMContext)
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     promo_id = int(call.data.split(":")[-1])
     await state.set_state(AdminTicketStates.waiting_promo_edit_expires)
     await state.update_data(promo_edit_id=promo_id)
@@ -543,22 +576,22 @@ async def admin_promo_edit_expires_start(call: CallbackQuery, state: FSMContext)
 async def admin_promo_edit_expires_save(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     promo_id = int((await state.get_data()).get("promo_edit_id", 0))
     promo = await PromoRepository(session).get(promo_id)
     if not promo:
         await state.clear()
-        await send_or_answer(message, "Промокод не найден.")
+        await _admin_edit_message(message, state, "Промокод не найден.")
         return
     try:
         promo.valid_until = _parse_optional_date((message.text or "").strip())
     except Exception:
-        await send_or_answer(message, "Неверная дата.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Неверная дата.", reply_markup=admin_back_keyboard())
         return
     await PromoRepository(session).save(promo)
     await state.clear()
-    await send_or_answer(
+    await _admin_edit_message(
         message,
         _fmt_promo_card(promo),
         reply_markup=admin_promo_details_keyboard(promo.id, active=promo.is_active),
@@ -570,6 +603,7 @@ async def admin_promo_edit_limit_start(call: CallbackQuery, state: FSMContext) -
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     promo_id = int(call.data.split(":")[-1])
     await state.set_state(AdminTicketStates.waiting_promo_edit_limit)
     await state.update_data(promo_edit_id=promo_id)
@@ -581,7 +615,7 @@ async def admin_promo_edit_limit_start(call: CallbackQuery, state: FSMContext) -
 async def admin_promo_edit_limit_save(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     raw = (message.text or "").strip().lower()
     usage_limit: int | None
@@ -590,18 +624,18 @@ async def admin_promo_edit_limit_save(message: Message, state: FSMContext, sessi
     elif raw.isdigit() and int(raw) > 0:
         usage_limit = int(raw)
     else:
-        await send_or_answer(message, "Нужен usageLimit >0 или '-'.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Нужен usageLimit >0 или '-'.", reply_markup=admin_back_keyboard())
         return
     promo_id = int((await state.get_data()).get("promo_edit_id", 0))
     promo = await PromoRepository(session).get(promo_id)
     if not promo:
         await state.clear()
-        await send_or_answer(message, "Промокод не найден.")
+        await _admin_edit_message(message, state, "Промокод не найден.")
         return
     promo.max_activations = usage_limit
     await PromoRepository(session).save(promo)
     await state.clear()
-    await send_or_answer(
+    await _admin_edit_message(
         message,
         _fmt_promo_card(promo),
         reply_markup=admin_promo_details_keyboard(promo.id, active=promo.is_active),
@@ -631,6 +665,7 @@ async def admin_users_search(call: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     await state.set_state(AdminTicketStates.waiting_user_id)
     await edit_or_send(call.message, "Введите Telegram user_id клиента:", reply_markup=admin_back_keyboard())
     await call.answer()
@@ -640,16 +675,16 @@ async def admin_users_search(call: CallbackQuery, state: FSMContext) -> None:
 async def admin_users_search_input(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     if not (message.text or "").strip().isdigit():
-        await send_or_answer(message, "Введите числовой user_id.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Введите числовой user_id.", reply_markup=admin_back_keyboard())
         return
     user_id = int((message.text or "").strip())
     await state.clear()
     await state.update_data(draft_user_id=user_id, balance_delta="0", days_delta=0, plan_change="")
     text, has_sub = await _render_user_profile_with_draft(user_id, session, state)
-    await send_or_answer(message, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
+    await _admin_edit_message(message, state, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
 
 
 @router.callback_query(F.data.startswith("admin:user:view:"))
@@ -705,6 +740,7 @@ async def admin_user_balance_op(call: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     parts = call.data.split(":")
     if len(parts) != 5:
         await call.answer("Некорректный формат", show_alert=True)
@@ -725,7 +761,7 @@ async def admin_user_balance_op(call: CallbackQuery, state: FSMContext) -> None:
 async def admin_user_balance_amount_input(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     raw = (message.text or "").strip().replace(",", ".")
     try:
@@ -733,21 +769,21 @@ async def admin_user_balance_amount_input(message: Message, state: FSMContext, s
         if amount <= 0:
             raise ValueError
     except Exception:
-        await send_or_answer(message, "Введите положительное число.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Введите положительное число.", reply_markup=admin_back_keyboard())
         return
     data = await state.get_data()
     user_id = int(data.get("draft_user_id", 0))
     op = data.get("balance_op", "add")
     if not user_id:
         await state.clear()
-        await send_or_answer(message, "Сессия истекла.")
+        await _admin_edit_message(message, state, "Сессия истекла.")
         return
     current_delta = Decimal(str(data.get("balance_delta", "0")))
     delta = amount if op == "add" else -amount
     await state.update_data(balance_delta=str(current_delta + delta))
     await state.set_state(None)
     text, has_sub = await _render_user_profile_with_draft(user_id, session, state)
-    await send_or_answer(message, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
+    await _admin_edit_message(message, state, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
 
 
 @router.callback_query(F.data.startswith("admin:user:days_op:"))
@@ -755,6 +791,7 @@ async def admin_user_days_op(call: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     parts = call.data.split(":")
     if len(parts) != 5:
         await call.answer("Некорректный формат", show_alert=True)
@@ -775,28 +812,28 @@ async def admin_user_days_op(call: CallbackQuery, state: FSMContext) -> None:
 async def admin_user_days_amount_input(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     if not (message.text or "").strip().isdigit():
-        await send_or_answer(message, "Введите целое число.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Введите целое число.", reply_markup=admin_back_keyboard())
         return
     days = int((message.text or "").strip())
     if days <= 0:
-        await send_or_answer(message, "Нужно число > 0.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Нужно число > 0.", reply_markup=admin_back_keyboard())
         return
     data = await state.get_data()
     user_id = int(data.get("draft_user_id", 0))
     op = data.get("days_op", "add")
     if not user_id:
         await state.clear()
-        await send_or_answer(message, "Сессия истекла.")
+        await _admin_edit_message(message, state, "Сессия истекла.")
         return
     current_delta = int(data.get("days_delta", 0))
     delta = days if op == "add" else -days
     await state.update_data(days_delta=current_delta + delta)
     await state.set_state(None)
     text, has_sub = await _render_user_profile_with_draft(user_id, session, state)
-    await send_or_answer(message, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
+    await _admin_edit_message(message, state, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
 
 
 @router.callback_query(F.data.startswith("admin:user:apply:"))
@@ -904,6 +941,7 @@ async def admin_tickets_search_start(call: CallbackQuery, state: FSMContext) -> 
         await call.answer("Нет доступа", show_alert=True)
         return
     await state.set_state(AdminTicketStates.waiting_ticket_search)
+    await _set_admin_anchor(state, call.message)
     await edit_or_send(
         call.message,
         "Введите ticket_id или tg_id:",
@@ -916,33 +954,35 @@ async def admin_tickets_search_start(call: CallbackQuery, state: FSMContext) -> 
 async def admin_tickets_search_input(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     raw = (message.text or "").strip().replace("#", "")
     if not raw.isdigit():
-        await send_or_answer(message, "Введите числовой ticket_id или tg_id.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Введите числовой ticket_id или tg_id.", reply_markup=admin_back_keyboard())
         return
     value = int(raw)
     repo = SupportRepository(session)
     by_id = await repo.get(value)
     await state.clear()
     if by_id:
-        await send_or_answer(
+        await _admin_edit_message(
             message,
+            state,
             f"Найден тикет #{by_id.id}. Открываю...",
             reply_markup=admin_ticket_actions_keyboard(by_id.id, is_open=by_id.status != TicketStatus.closed),
         )
         return
     tickets = await repo.get_user_tickets(value, limit=20)
     if not tickets:
-        await send_or_answer(message, "Ничего не найдено.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Ничего не найдено.", reply_markup=admin_back_keyboard())
         return
     lines = [f"Найдено тикетов для tg_id={value}:"]
     for item in tickets:
         updated = item.updated_at.strftime("%d.%m %H:%M") if item.updated_at else item.created_at.strftime("%d.%m %H:%M")
         lines.append(f"#{item.id} | {item.status.value} | {updated}")
-    await send_or_answer(
+    await _admin_edit_message(
         message,
+        state,
         "\n".join(lines),
         reply_markup=admin_tickets_keyboard([item.id for item in tickets], active_filter="open"),
     )
@@ -977,6 +1017,7 @@ async def admin_reply_start(call: CallbackQuery, state: FSMContext, session: Asy
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    await _set_admin_anchor(state, call.message)
     ticket_id = int(call.data.split(":")[-1])
     ticket = await SupportRepository(session).get(ticket_id)
     if not ticket:
@@ -999,28 +1040,28 @@ async def admin_reply_start(call: CallbackQuery, state: FSMContext, session: Asy
 async def admin_reply_send(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
-        await send_or_answer(message, "Доступ запрещен.")
+        await _admin_edit_message(message, state, "Доступ запрещен.")
         return
     text = (message.text or "").strip()
     if not text:
-        await send_or_answer(message, "Отправьте текст ответа.", reply_markup=admin_back_keyboard())
+        await _admin_edit_message(message, state, "Отправьте текст ответа.", reply_markup=admin_back_keyboard())
         return
     data = await state.get_data()
     ticket_id = data.get("ticket_id")
     user_id = data.get("user_id")
     if not ticket_id or not user_id:
         await state.clear()
-        await send_or_answer(message, "Сессия устарела.")
+        await _admin_edit_message(message, state, "Сессия устарела.")
         return
     repo = SupportRepository(session)
     ticket = await repo.get(int(ticket_id))
     if not ticket:
         await state.clear()
-        await send_or_answer(message, "Тикет не найден.")
+        await _admin_edit_message(message, state, "Тикет не найден.")
         return
     if ticket.status == TicketStatus.closed:
         await state.clear()
-        await send_or_answer(message, "Тикет закрыт.")
+        await _admin_edit_message(message, state, "Тикет закрыт.")
         return
     await repo.add_message(ticket, TicketSenderRole.admin, text)
     if ticket.status == TicketStatus.pending:
@@ -1034,11 +1075,12 @@ async def admin_reply_send(message: Message, state: FSMContext, session: AsyncSe
             reply_markup=_user_ticket_link_keyboard(ticket.id),
         )
     except TelegramAPIError:
-        await send_or_answer(message, "Не удалось отправить ответ пользователю.")
+        await _admin_edit_message(message, state, "Не удалось отправить ответ пользователю.")
         await state.clear()
         return
-    await send_or_answer(
+    await _admin_edit_message(
         message,
+        state,
         f"Ответ по тикету #{ticket.id} отправлен.\nПревью: {_preview(text)}",
         reply_markup=admin_ticket_actions_keyboard(ticket.id, is_open=True),
     )
