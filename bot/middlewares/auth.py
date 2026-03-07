@@ -2,7 +2,7 @@ import logging
 from typing import Callable, Awaitable, Any
 from aiogram import BaseMiddleware
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.types import TelegramObject, Message, CallbackQuery
+from aiogram.types import TelegramObject, Message, CallbackQuery, Update
 from bot.config import settings
 from bot.repositories.app_setting import AppSettingRepository
 from bot.utils.channel_subscription import check_channel_subscription
@@ -27,8 +27,26 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
         bot = data["bot"]
         session = data.get("session")
 
-        if isinstance(event, (Message, CallbackQuery)):
-            user_id = event.from_user.id
+        message: Message | None = None
+        callback: CallbackQuery | None = None
+
+        if isinstance(event, Message):
+            message = event
+        elif isinstance(event, CallbackQuery):
+            callback = event
+            if isinstance(event.message, Message):
+                message = event.message
+        elif isinstance(event, Update):
+            callback = event.callback_query
+            if isinstance(event.message, Message):
+                message = event.message
+            elif callback is not None and isinstance(callback.message, Message):
+                message = callback.message
+
+        actor = callback.from_user if callback else (message.from_user if message else None)
+
+        if actor is not None:
+            user_id = actor.id
             if user_id in settings.admin_id_set:
                 return await handler(event, data)
 
@@ -46,18 +64,17 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
                         "⚙️ Сейчас идут технические работы.\n"
                         "Пожалуйста, ожидайте информацию в канале."
                     )
-                    if isinstance(event, Message):
-                        await event.answer(text, reply_markup=kb)
-                    else:
-                        await event.message.answer(text, reply_markup=kb)
-                        await event.answer("Бот временно на техработах", show_alert=True)
+                    if message is not None:
+                        await message.answer(text, reply_markup=kb)
+                    if callback is not None:
+                        await callback.answer("Бот временно на техработах", show_alert=True)
                     return
 
-            if isinstance(event, Message) and event.successful_payment:
+            if message is not None and message.successful_payment:
                 return await handler(event, data)
 
             # Allow the "check subscription" callback to pass through
-            if isinstance(event, CallbackQuery) and event.data == "check:subscription":
+            if callback is not None and callback.data == "check:subscription":
                 return await handler(event, data)
 
             is_member, reason = await check_channel_subscription(bot, user_id)
@@ -82,11 +99,10 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
                     f"{details}"
                 )
                 kb = channel_check_keyboard()
-                if isinstance(event, Message):
-                    await event.answer(text, reply_markup=kb)
-                elif isinstance(event, CallbackQuery):
-                    await event.message.answer(text, reply_markup=kb)
-                    await event.answer()
+                if message is not None:
+                    await message.answer(text, reply_markup=kb)
+                if callback is not None:
+                    await callback.answer()
                 return  # block further processing
 
         return await handler(event, data)
