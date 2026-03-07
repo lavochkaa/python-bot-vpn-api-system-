@@ -14,6 +14,7 @@ from bot.config import settings
 from bot.db.models import DiscountType, PromoCode, PromoTarget, TicketSenderRole, TicketStatus
 from bot.keyboards.admin import (
     admin_back_keyboard,
+    admin_maintenance_keyboard,
     admin_menu_keyboard,
     admin_promo_delete_confirm_keyboard,
     admin_promo_details_keyboard,
@@ -27,6 +28,7 @@ from bot.keyboards.admin import (
     admin_user_manage_keyboard,
 )
 from bot.providers.vpn.factory import build_vpn_provider
+from bot.repositories.app_setting import AppSettingRepository
 from bot.repositories.payment import PaymentRepository
 from bot.repositories.promo import PromoRepository
 from bot.repositories.subscription import SubscriptionRepository
@@ -37,6 +39,7 @@ from bot.utils.messages import edit_or_send, send_or_answer, send_to_chat
 
 router = Router()
 PROMO_PAGE_SIZE = 10
+MAINTENANCE_KEY = "maintenance_mode"
 
 
 def _is_admin(user_id: int) -> bool:
@@ -235,6 +238,44 @@ async def admin_promos(call: CallbackQuery, state: FSMContext) -> None:
         reply_markup=admin_promos_keyboard(),
     )
     await call.answer()
+
+
+@router.callback_query(F.data == "admin:maintenance")
+async def admin_maintenance(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await _set_admin_anchor(state, call.message)
+    enabled = await AppSettingRepository(session).get_bool(MAINTENANCE_KEY, default=False)
+    status_text = "🔒 включен" if enabled else "✅ выключен"
+    await edit_or_send(
+        call.message,
+        "🛠 <b>Режим техработ</b>\n\n"
+        f"Текущий статус: <b>{status_text}</b>\n\n"
+        "Выберите действие:",
+        reply_markup=admin_maintenance_keyboard(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:maintenance:set:"))
+async def admin_maintenance_set(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    mode = call.data.split(":")[-1]
+    enabled = mode == "close"
+    await AppSettingRepository(session).set_bool(MAINTENANCE_KEY, enabled)
+    await _set_admin_anchor(state, call.message)
+    status_text = "🔒 включен" if enabled else "✅ выключен"
+    await edit_or_send(
+        call.message,
+        "🛠 <b>Режим техработ</b>\n\n"
+        f"Текущий статус: <b>{status_text}</b>\n\n"
+        "Выберите действие:",
+        reply_markup=admin_maintenance_keyboard(),
+    )
+    await call.answer("Статус обновлен")
 
 
 @router.callback_query(F.data == "admin:promos:create")

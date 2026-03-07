@@ -8,6 +8,7 @@ def admin_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="👤 Клиенты", callback_data="admin:users")
     builder.button(text="🎟 Промокоды", callback_data="admin:promos")
     builder.button(text="🎫 Тикеты", callback_data="admin:tickets")
+    builder.button(text="🛠 Техработы", callback_data="admin:maintenance")
     builder.button(text="📊 Статистика", callback_data="admin:stats")
     builder.button(text="🔙 В меню", callback_data="menu:main")
     builder.adjust(1)
@@ -16,6 +17,15 @@ def admin_menu_keyboard() -> InlineKeyboardMarkup:
 
 def admin_back_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    builder.button(text="🔙 Назад", callback_data="admin:menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_maintenance_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔒 Закрыть бота", callback_data="admin:maintenance:set:close")
+    builder.button(text="✅ Открыть бота", callback_data="admin:maintenance:set:open")
     builder.button(text="🔙 Назад", callback_data="admin:menu")
     builder.adjust(1)
     return builder.as_markup()
