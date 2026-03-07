@@ -208,19 +208,27 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
             "profile_preset": preset,
             "config_mode": "full" if preset == "max" else preset,
         }
+        reset_candidates: list[dict[str, Any]] = []
+        if reset_mode == "monthly":
+            reset_candidates = [
+                {"mode": "monthly"},
+                {"reset_mode": "monthly"},
+                {"usage_reset_strategy": "monthly"},
+                {"reset_usage_period": "month"},
+            ]
         for item in core_variants:
-            # Keep known-good payloads first for maximum compatibility and speed.
-            variants.append(item)
-            variants.append({"user": item})
-            variants.append({"users": [item]})
-            variants.append([item])  # type: ignore[list-item]
-
-            # Optional enrichment attempts: build preset and custom inbound names.
-            enriched_item = {**item, **full_flags}
-            variants.append(enriched_item)
-            variants.append({"user": enriched_item})
-            variants.append({"users": [enriched_item]})
-            variants.append([enriched_item])  # type: ignore[list-item]
+            # Prioritize payloads with monthly reset fields first; API loop stops on first success.
+            prioritized_items: list[dict[str, Any]] = []
+            for reset_fields in reset_candidates:
+                prioritized_items.append({**item, **reset_fields, **full_flags})
+                prioritized_items.append({**item, **reset_fields})
+            prioritized_items.append({**item, **full_flags})
+            prioritized_items.append(item)
+            for payload_item in prioritized_items:
+                variants.append(payload_item)
+                variants.append({"user": payload_item})
+                variants.append({"users": [payload_item]})
+                variants.append([payload_item])  # type: ignore[list-item]
 
             for enriched in self._build_inbounds_payload_variants(item, inbound_names):
                 variants.append(enriched)
