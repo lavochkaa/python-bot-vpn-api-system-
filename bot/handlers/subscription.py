@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 import html
 import logging
 import re
@@ -164,7 +164,45 @@ def _calculate_price(traffic_gb: int | None, term_months: int | None) -> Decimal
     price = SUBSCRIPTION_PRICE_MATRIX.get((duration_days, traffic_gb))
     if price is None:
         return None
-    return price.quantize(Decimal("0.01"))
+    return price.quantize(Decimal("1"), rounding=ROUND_CEILING)
+
+
+async def _refresh_promo_for_config(
+    state: FSMContext,
+    session: AsyncSession,
+    user_id: int,
+    traffic_gb: int | None,
+    term_months: int | None,
+) -> tuple[str, int | None, Decimal | None]:
+    data = await state.get_data()
+    promo_code = data.get("sub_promo_code")
+    if not promo_code:
+        await state.update_data(sub_promo_final_price="")
+        return "", None, None
+
+    base_price = _calculate_price(traffic_gb, term_months)
+    if base_price is None:
+        await state.update_data(sub_promo_final_price="")
+        return str(promo_code), data.get("sub_promo_id"), None
+
+    service = PromoService(PromoRepository(session), UserRepository(session))
+    try:
+        final_price, promo = await service.validate_and_apply(
+            code=str(promo_code),
+            user_id=user_id,
+            base_amount=base_price,
+            target=PromoTarget.subscription,
+        )
+    except ValueError:
+        await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
+        return "", None, None
+
+    await state.update_data(
+        sub_promo_code=promo.code if promo else "",
+        sub_promo_id=promo.id if promo else None,
+        sub_promo_final_price=str(final_price),
+    )
+    return promo.code if promo else "", promo.id if promo else None, final_price
 
 
 def _build_configurator_text(
@@ -259,7 +297,7 @@ async def subscription_menu(call: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data.startswith("sub_gb_"))
-async def subscription_pick_gb(call: CallbackQuery, state: FSMContext) -> None:
+async def subscription_pick_gb(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     try:
         traffic_gb = int(call.data.split("_")[-1])
     except (TypeError, ValueError):
@@ -272,7 +310,13 @@ async def subscription_pick_gb(call: CallbackQuery, state: FSMContext) -> None:
 
     data = await state.get_data()
     term_months = data.get("sub_term_months")
-    await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
+    await _refresh_promo_for_config(
+        state=state,
+        session=session,
+        user_id=call.from_user.id,
+        traffic_gb=traffic_gb,
+        term_months=term_months,
+    )
     await _render_configurator(
         call.message,
         state,
@@ -284,7 +328,7 @@ async def subscription_pick_gb(call: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data.startswith("sub_term_"))
-async def subscription_pick_term(call: CallbackQuery, state: FSMContext) -> None:
+async def subscription_pick_term(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     try:
         term_months = int(call.data.split("_")[-1])
     except (TypeError, ValueError):
@@ -297,7 +341,13 @@ async def subscription_pick_term(call: CallbackQuery, state: FSMContext) -> None
 
     data = await state.get_data()
     traffic_gb = data.get("sub_traffic_gb")
-    await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
+    await _refresh_promo_for_config(
+        state=state,
+        session=session,
+        user_id=call.from_user.id,
+        traffic_gb=traffic_gb,
+        term_months=term_months,
+    )
     await _render_configurator(
         call.message,
         state,

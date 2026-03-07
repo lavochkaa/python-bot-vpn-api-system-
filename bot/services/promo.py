@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from bot.db.models import PromoCode, DiscountType, PromoTarget
 from bot.repositories.promo import PromoRepository
 from bot.repositories.user import UserRepository
@@ -59,6 +59,7 @@ class PromoService:
             discount = promo.discount_value
 
         final = max(base_amount - discount, Decimal("0"))
+        final = final.quantize(Decimal("1"), rounding=ROUND_CEILING)
         return final, promo
 
     async def mark_redeemed(self, promo_id: int, user_id: int) -> None:

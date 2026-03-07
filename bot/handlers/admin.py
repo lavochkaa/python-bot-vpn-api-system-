@@ -241,11 +241,12 @@ async def admin_promos_create(call: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
-    await _set_admin_anchor(state, call.message)
     await state.clear()
+    await _set_admin_anchor(state, call.message)
     await state.set_state(AdminTicketStates.waiting_promo_code)
-    await edit_or_send(
+    await _admin_edit_message(
         call.message,
+        state,
         "Введите code промокода (латиница/цифры):",
         reply_markup=admin_back_keyboard(),
     )
@@ -304,7 +305,7 @@ async def admin_promos_target_pick(call: CallbackQuery, state: FSMContext) -> No
         return
     await state.update_data(promo_target=target)
     await state.set_state(AdminTicketStates.waiting_promo_value)
-    await edit_or_send(call.message, "Введите value в % (1..100):", reply_markup=admin_back_keyboard())
+    await _admin_edit_message(call.message, state, "Введите value в % (1..100):", reply_markup=admin_back_keyboard())
     await call.answer()
 
 
