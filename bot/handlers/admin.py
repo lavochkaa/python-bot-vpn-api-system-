@@ -269,6 +269,7 @@ async def admin_promos_code_input(message: Message, state: FSMContext, session: 
     await state.set_state(AdminTicketStates.waiting_promo_target)
     await _admin_edit_message(
         message,
+        state,
         "Тип скидки: <b>процент</b>.\nВыберите назначение промокода:",
         reply_markup=admin_promo_target_keyboard(),
     )
@@ -330,6 +331,7 @@ async def admin_promos_value_input(message: Message, state: FSMContext) -> None:
     await state.set_state(AdminTicketStates.waiting_promo_expires)
     await _admin_edit_message(
         message,
+        state,
         "Введите expiresAt в формате YYYY-MM-DD или '-' для пропуска:",
         reply_markup=admin_back_keyboard(),
     )
@@ -350,6 +352,7 @@ async def admin_promos_expires_input(message: Message, state: FSMContext) -> Non
     await state.set_state(AdminTicketStates.waiting_promo_limit)
     await _admin_edit_message(
         message,
+        state,
         "Введите usageLimit (целое > 0) или '-' для пропуска:",
         reply_markup=admin_back_keyboard(),
     )
@@ -401,6 +404,7 @@ async def admin_promos_limit_input(message: Message, state: FSMContext, session:
     await state.clear()
     await _admin_edit_message(
         message,
+        state,
         f"✅ Промокод создан.\n\n{_fmt_promo_card(promo)}",
         reply_markup=admin_promo_details_keyboard(promo.id, active=promo.is_active),
     )
@@ -554,6 +558,7 @@ async def admin_promo_edit_value_save(message: Message, state: FSMContext, sessi
     await state.clear()
     await _admin_edit_message(
         message,
+        state,
         _fmt_promo_card(promo),
         reply_markup=admin_promo_details_keyboard(promo.id, active=promo.is_active),
     )
@@ -593,6 +598,7 @@ async def admin_promo_edit_expires_save(message: Message, state: FSMContext, ses
     await state.clear()
     await _admin_edit_message(
         message,
+        state,
         _fmt_promo_card(promo),
         reply_markup=admin_promo_details_keyboard(promo.id, active=promo.is_active),
     )
@@ -637,6 +643,7 @@ async def admin_promo_edit_limit_save(message: Message, state: FSMContext, sessi
     await state.clear()
     await _admin_edit_message(
         message,
+        state,
         _fmt_promo_card(promo),
         reply_markup=admin_promo_details_keyboard(promo.id, active=promo.is_active),
     )
