@@ -38,23 +38,51 @@ DEFAULT_BUILD_PRESET = "max"
 
 
 async def _edit_only(message: Message, text: str, reply_markup=None) -> None:
-    try:
-        await message.edit_text(_short_text(text), reply_markup=reply_markup)
-    except TelegramBadRequest as exc:
-        err = str(exc).lower()
-        if "message is not modified" in err:
-            return
-        if "can't parse entities" in err:
-            safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
-            try:
-                await message.edit_text(_short_text(safe_plain), reply_markup=reply_markup)
-            except TelegramBadRequest:
-                return
-            return
-        # In this flow, do not send extra messages as fallback.
+    rendered = _short_text(text)
+
+    async def _try_edit_text(payload: str) -> bool:
+        try:
+            await message.edit_text(payload, reply_markup=reply_markup)
+            return True
+        except TelegramBadRequest as exc:
+            err = str(exc).lower()
+            if "message is not modified" in err:
+                return True
+            return False
+        except TelegramNetworkError:
+            return False
+
+    async def _try_edit_caption(payload: str) -> bool:
+        try:
+            await message.edit_caption(caption=payload, reply_markup=reply_markup)
+            return True
+        except TelegramBadRequest as exc:
+            err = str(exc).lower()
+            if "message is not modified" in err:
+                return True
+            return False
+        except TelegramNetworkError:
+            return False
+
+    # text messages
+    if await _try_edit_text(rendered):
         return
-    except TelegramNetworkError:
+
+    # media messages (photo/video with caption)
+    if await _try_edit_caption(rendered):
         return
+
+    # entity-safe retry in plain text/caption
+    safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
+    safe_rendered = _short_text(safe_plain)
+
+    if await _try_edit_text(safe_rendered):
+        return
+    if await _try_edit_caption(safe_rendered):
+        return
+
+    # In this flow, do not send extra fallback messages.
+    return
 
 
 def _safe_error_text(exc: Exception) -> str:
