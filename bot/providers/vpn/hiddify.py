@@ -133,9 +133,17 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                         json=payload,
                         timeout=request_timeout,
                     )
+                    body = await response.text()
                     if response.status < 400:
                         logger.info("Hiddify traffic reset accepted: %s %s", method, endpoint)
                         return True
+                    logger.debug(
+                        "Hiddify traffic reset rejected: %s %s status=%s body=%s",
+                        method,
+                        endpoint,
+                        response.status,
+                        self._compact_error(body),
+                    )
                 except (aiohttp.ClientError, asyncio.TimeoutError):
                     continue
         return False
@@ -323,61 +331,59 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
             {"Hiddify-API-Key": api_key},
             {"Authorization": f"Bearer {api_key}"},
         )
+        # Panel toggle looks like "Reset package usage", so try those fields first.
         payloads: list[dict[str, Any] | None] = [
-            {"reset_usage": True},
-            {"reset_traffic": True},
-            {"reset": True},
+            {"reset_package_usage": True},
+            {"package_usage_reset": True},
+            {"reset_package_usage": True, "current_usage_GB": 0},
             {"current_usage_GB": 0},
-            {"usage_limit_used_GB": 0},
-            {"used_traffic": 0},
-            {"traffic_used": 0},
-            None,
         ]
         attempts: list[tuple[str, str, dict[str, str], dict[str, str], dict[str, Any] | None]] = []
         for base in path_bases:
             for headers in auth_headers:
-                for ref in refs:
-                    attempts.extend(
-                        self._build_reset_ref_attempts(
-                            base=base,
-                            headers=headers,
-                            ref=ref,
-                            payloads=payloads,
-                        )
-                    )
-                    if "-" in ref:
-                        attempts.append(("POST", f"{base}/user/", headers, {"uuid": ref, "reset_usage": "true"}, None))
-                        attempts.append(("POST", f"{base}/users/", headers, {"uuid": ref, "reset_usage": "true"}, None))
-        return attempts
+                # Endpoints that accept update payload without path id.
+                for root in ("user", "users"):
+                    root_url_slash = f"{base}/{root}/"
+                    root_url_plain = f"{base}/{root}"
+                    for ref in refs:
+                        body_identity: dict[str, Any] = {}
+                        if "-" in ref:
+                            body_identity["uuid"] = ref
+                        elif ref.startswith("user_"):
+                            body_identity["username"] = ref
+                        elif ref.isdigit():
+                            body_identity["id"] = int(ref)
+                            body_identity["user_id"] = int(ref)
+                        for payload in payloads:
+                            merged_payload = {**body_identity, **(payload or {})}
+                            attempts.append(("PATCH", root_url_slash, headers, {}, merged_payload))
+                            attempts.append(("PATCH", root_url_plain, headers, {}, merged_payload))
+                            attempts.append(("PUT", root_url_slash, headers, {}, merged_payload))
+                            attempts.append(("PUT", root_url_plain, headers, {}, merged_payload))
 
-    def _build_reset_ref_attempts(
-        self,
-        *,
-        base: str,
-        headers: dict[str, str],
-        ref: str,
-        payloads: list[dict[str, Any] | None],
-    ) -> list[tuple[str, str, dict[str, str], dict[str, str], dict[str, Any] | None]]:
-        attempts: list[tuple[str, str, dict[str, str], dict[str, str], dict[str, Any] | None]] = []
-        paths = (
-            f"{base}/user/{ref}/reset/",
-            f"{base}/user/{ref}/reset",
-            f"{base}/users/{ref}/reset/",
-            f"{base}/users/{ref}/reset",
-            f"{base}/user/{ref}/reset-usage/",
-            f"{base}/user/{ref}/reset-usage",
-            f"{base}/users/{ref}/reset-usage/",
-            f"{base}/users/{ref}/reset-usage",
-            f"{base}/user/{ref}/",
-            f"{base}/user/{ref}",
-            f"{base}/users/{ref}/",
-            f"{base}/users/{ref}",
-        )
-        for path in paths:
-            for payload in payloads:
-                attempts.append(("POST", path, headers, {}, payload))
-                attempts.append(("PATCH", path, headers, {}, payload))
-                attempts.append(("PUT", path, headers, {}, payload))
+                for ref in refs:
+                    paths = (
+                        f"{base}/user/{ref}/",
+                        f"{base}/user/{ref}",
+                        f"{base}/users/{ref}/",
+                        f"{base}/users/{ref}",
+                        f"{base}/user/{ref}/reset",
+                        f"{base}/user/{ref}/reset/",
+                        f"{base}/users/{ref}/reset",
+                        f"{base}/users/{ref}/reset/",
+                    )
+                    for path in paths:
+                        for payload in payloads:
+                            attempts.append(("PATCH", path, headers, {}, payload))
+                            attempts.append(("PUT", path, headers, {}, payload))
+                            attempts.append(("POST", path, headers, {}, payload))
+                    if "-" in ref:
+                        # UUID fallback through query-based update routes.
+                        for payload in payloads:
+                            attempts.append(("PATCH", f"{base}/user/", headers, {"uuid": ref}, payload))
+                            attempts.append(("PATCH", f"{base}/users/", headers, {"uuid": ref}, payload))
+                            attempts.append(("PATCH", f"{base}/user", headers, {"uuid": ref}, payload))
+                            attempts.append(("PATCH", f"{base}/users", headers, {"uuid": ref}, payload))
         return attempts
 
     async def _safe_json(self, response: aiohttp.ClientResponse, body: str) -> Any:
