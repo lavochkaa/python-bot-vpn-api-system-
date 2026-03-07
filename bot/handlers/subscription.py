@@ -9,6 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.db.models import PromoTarget
 from bot.constants.subscription_pricing import (
     DURATION_MONTH_OPTIONS,
     DURATION_MONTH_TO_DAYS,
@@ -23,10 +24,13 @@ from bot.keyboards.subscription import (
 from bot.providers.vpn.factory import build_vpn_provider
 from bot.repositories.ledger import BalanceLedgerRepository
 from bot.repositories.plan import PlanRepository
+from bot.repositories.promo import PromoRepository
 from bot.repositories.subscription import SubscriptionRepository
 from bot.repositories.user import UserRepository
 from bot.repositories.vpn_key import VpnKeyRepository
+from bot.services.promo import PromoService
 from bot.services.subscription import SubscriptionService
+from bot.states.subscription import SubscriptionStates
 from bot.utils.messages import _short_text
 
 router = Router()
@@ -85,6 +89,63 @@ async def _edit_only(message: Message, text: str, reply_markup=None) -> None:
     return
 
 
+async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply_markup=None) -> None:
+    rendered = _short_text(text)
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=rendered,
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            return
+    except TelegramNetworkError:
+        return
+
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=message_id,
+            caption=rendered,
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            return
+    except TelegramNetworkError:
+        return
+
+    safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
+    safe_rendered = _short_text(safe_plain)
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=safe_rendered,
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest:
+        pass
+    except TelegramNetworkError:
+        return
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=message_id,
+            caption=safe_rendered,
+            reply_markup=reply_markup,
+        )
+    except (TelegramBadRequest, TelegramNetworkError):
+        return
+
+
 def _safe_error_text(exc: Exception) -> str:
     text = str(exc)
     text = re.sub(r"<[^>]+>", " ", text)
@@ -106,17 +167,27 @@ def _calculate_price(traffic_gb: int | None, term_months: int | None) -> Decimal
     return price.quantize(Decimal("0.01"))
 
 
-def _build_configurator_text(traffic_gb: int | None, term_months: int | None) -> str:
+def _build_configurator_text(
+    traffic_gb: int | None,
+    term_months: int | None,
+    *,
+    promo_code: str | None = None,
+    final_price: Decimal | None = None,
+) -> str:
     volume_title = f"{traffic_gb} ГБ" if traffic_gb is not None else "не выбран"
     term_title = f"{term_months} мес" if term_months is not None else "не выбран"
     price = _calculate_price(traffic_gb, term_months)
+    if final_price is not None:
+        price = final_price
     price_title = f"{price} ₽" if price is not None else "будет рассчитана после выбора параметров"
+    promo_title = promo_code if promo_code else "не применен"
 
     return (
         "📦 <b>Настройте подписку самостоятельно</b>\n\n"
         "<b>Выбранная конфигурация:</b>\n"
         f"• Объем: <b>{volume_title}</b>\n"
         f"• Срок: <b>{term_title}</b>\n"
+        f"• Промокод: <b>{promo_title}</b>\n"
         f"• Цена: <b>{price_title}</b>\n\n"
         "Выберите нужные параметры ниже."
     )
@@ -152,13 +223,24 @@ async def _render_configurator(
     await state.update_data(
         sub_traffic_gb=traffic_gb,
         sub_term_months=term_months,
+        sub_chat_id=target.chat.id,
+        sub_message_id=target.message_id,
         plan_type=DEFAULT_PLAN_TYPE,
         plan_slug=DEFAULT_PLAN_SLUG,
         build_preset=DEFAULT_BUILD_PRESET,
     )
+    data = await state.get_data()
+    promo_code = data.get("sub_promo_code")
+    promo_final = data.get("sub_promo_final_price")
+    promo_final_price = Decimal(str(promo_final)) if promo_final else None
 
-    text = _build_configurator_text(traffic_gb, term_months)
-    keyboard = subscription_configurator_keyboard(traffic_gb, term_months)
+    text = _build_configurator_text(
+        traffic_gb,
+        term_months,
+        promo_code=promo_code,
+        final_price=promo_final_price,
+    )
+    keyboard = subscription_configurator_keyboard(traffic_gb, term_months, has_promo=bool(promo_code))
     _ = with_banner
     await _edit_only(target, text, reply_markup=keyboard)
 
@@ -190,6 +272,7 @@ async def subscription_pick_gb(call: CallbackQuery, state: FSMContext) -> None:
 
     data = await state.get_data()
     term_months = data.get("sub_term_months")
+    await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
     await _render_configurator(
         call.message,
         state,
@@ -214,6 +297,7 @@ async def subscription_pick_term(call: CallbackQuery, state: FSMContext) -> None
 
     data = await state.get_data()
     traffic_gb = data.get("sub_traffic_gb")
+    await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
     await _render_configurator(
         call.message,
         state,
@@ -222,6 +306,87 @@ async def subscription_pick_term(call: CallbackQuery, state: FSMContext) -> None
         with_banner=False,
     )
     await call.answer()
+
+
+@router.callback_query(F.data == "sub_promo_enter")
+async def subscription_promo_enter(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not data.get("sub_traffic_gb") or not data.get("sub_term_months"):
+        await call.answer("Сначала выберите объем и срок.", show_alert=True)
+        return
+    await state.set_state(SubscriptionStates.waiting_promo_code)
+    await _edit_only(call.message, "Введите промокод для подписки:")
+    await call.answer()
+
+
+@router.callback_query(F.data == "sub_promo_clear")
+async def subscription_promo_clear(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    traffic_gb = data.get("sub_traffic_gb")
+    term_months = data.get("sub_term_months")
+    await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
+    await _render_configurator(
+        call.message,
+        state,
+        traffic_gb=traffic_gb,
+        term_months=term_months,
+        with_banner=False,
+    )
+    await call.answer("Промокод удален")
+
+
+@router.message(SubscriptionStates.waiting_promo_code)
+async def subscription_promo_apply(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    code = (message.text or "").strip().upper()
+    data = await state.get_data()
+    traffic_gb = data.get("sub_traffic_gb")
+    term_months = data.get("sub_term_months")
+    if not traffic_gb or not term_months:
+        await state.clear()
+        await message.answer("Сессия истекла. Откройте подписку заново.")
+        return
+    base_price = _calculate_price(traffic_gb, term_months)
+    if base_price is None:
+        await state.set_state(None)
+        await message.answer("Не удалось рассчитать цену для этой конфигурации.")
+        return
+
+    service = PromoService(PromoRepository(session), UserRepository(session))
+    try:
+        final_price, promo = await service.validate_and_apply(
+            code=code,
+            user_id=message.from_user.id,
+            base_amount=base_price,
+            target=PromoTarget.subscription,
+        )
+    except ValueError as exc:
+        chat_id = int(data.get("sub_chat_id", 0))
+        message_id = int(data.get("sub_message_id", 0))
+        if chat_id and message_id:
+            await _edit_only_by_ids(message.bot, chat_id, message_id, f"❌ {exc}")
+        else:
+            await message.answer(f"❌ {exc}")
+        return
+
+    await state.set_state(None)
+    await state.update_data(
+        sub_promo_code=promo.code if promo else "",
+        sub_promo_id=promo.id if promo else None,
+        sub_promo_final_price=str(final_price),
+    )
+    chat_id = int(data.get("sub_chat_id", 0))
+    message_id = int(data.get("sub_message_id", 0))
+    text = _build_configurator_text(
+        traffic_gb,
+        term_months,
+        promo_code=promo.code if promo else "",
+        final_price=final_price,
+    )
+    kb = subscription_configurator_keyboard(traffic_gb, term_months, has_promo=bool(promo))
+    if chat_id and message_id:
+        await _edit_only_by_ids(message.bot, chat_id, message_id, text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data == "sub_pay")
@@ -234,10 +399,29 @@ async def subscription_pay(call: CallbackQuery, state: FSMContext, session: Asyn
         await call.answer("Сначала выберите объем и срок подписки.", show_alert=True)
         return
 
-    price = _calculate_price(traffic_gb, term_months)
-    if price is None:
+    base_price = _calculate_price(traffic_gb, term_months)
+    if base_price is None:
         await call.answer("Цена для этой конфигурации не найдена.", show_alert=True)
         return
+
+    price = base_price
+    promo_id = data.get("sub_promo_id")
+    promo_code = data.get("sub_promo_code")
+    if promo_code:
+        promo_service = PromoService(PromoRepository(session), UserRepository(session))
+        try:
+            price, promo = await promo_service.validate_and_apply(
+                code=str(promo_code),
+                user_id=call.from_user.id,
+                base_amount=base_price,
+                target=PromoTarget.subscription,
+            )
+            promo_id = promo.id if promo else None
+        except ValueError as exc:
+            await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
+            await _edit_only(call.message, f"❌ {exc}")
+            await call.answer("Промокод сброшен", show_alert=True)
+            return
 
     duration_days = DURATION_MONTH_TO_DAYS[term_months]
 
@@ -255,19 +439,20 @@ async def subscription_pay(call: CallbackQuery, state: FSMContext, session: Asyn
             traffic_gb=traffic_gb,
             duration_days=duration_days,
             final_price=price,
+            promo_id=int(promo_id) if promo_id else None,
         )
     except ValueError as exc:
         await _edit_only(
             call.message,
             f"❌ {_safe_error_text(exc)}\n\nПроверьте настройки API в .env и попробуйте снова.",
-            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months),
+            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, has_promo=bool(promo_code)),
         )
     except Exception:
         logger.exception("Unexpected error while finishing subscription purchase")
         await _edit_only(
             call.message,
             "❌ Ошибка при оформлении подписки. Попробуйте еще раз через минуту.",
-            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months),
+            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, has_promo=bool(promo_code)),
         )
 
 
@@ -280,6 +465,7 @@ async def _finish_purchase(
     traffic_gb: int,
     duration_days: int,
     final_price: Decimal,
+    promo_id: int | None = None,
 ) -> None:
     await _edit_only(message, "⏳ Оформляю подписку, подождите...")
 
@@ -307,6 +493,12 @@ async def _finish_purchase(
         traffic_gb=traffic_gb,
         build_preset=DEFAULT_BUILD_PRESET,
     )
+    if promo_id:
+        try:
+            promo_service = PromoService(PromoRepository(session), UserRepository(session))
+            await promo_service.mark_redeemed(promo_id=promo_id, user_id=user_id)
+        except Exception:
+            logger.exception("Failed to mark promo redemption promo_id=%s user_id=%s", promo_id, user_id)
 
     user_keys = await VpnKeyRepository(session).get_user_keys(user_id, limit=1)
     key_text = ""

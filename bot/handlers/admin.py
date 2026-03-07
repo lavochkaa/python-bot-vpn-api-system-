@@ -11,13 +11,14 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.db.models import DiscountType, PromoCode, TicketSenderRole, TicketStatus
+from bot.db.models import DiscountType, PromoCode, PromoTarget, TicketSenderRole, TicketStatus
 from bot.keyboards.admin import (
     admin_back_keyboard,
     admin_menu_keyboard,
     admin_promo_delete_confirm_keyboard,
     admin_promo_details_keyboard,
     admin_promo_edit_keyboard,
+    admin_promo_target_keyboard,
     admin_promo_type_keyboard,
     admin_promos_keyboard,
     admin_promos_list_keyboard,
@@ -55,16 +56,19 @@ def _fmt_promo_short(promo: PromoCode) -> str:
     value = f"{promo.discount_value}%"
     if promo.discount_type == DiscountType.fixed:
         value = f"{promo.discount_value}₽"
-    return f"{promo.code} — {value} — {promo.activations_count}/{limit}"
+    target = promo.target.value if promo.target else "both"
+    return f"{promo.code} — {value} — {target} — {promo.activations_count}/{limit}"
 
 
 def _fmt_promo_card(promo: PromoCode) -> str:
     expires = promo.valid_until.strftime("%d.%m.%Y") if promo.valid_until else "без даты"
     limit = promo.max_activations if promo.max_activations is not None else "без лимита"
+    target = promo.target.value if promo.target else "both"
     return (
         "🎟 <b>Промокод</b>\n\n"
         f"ID: <code>{promo.id}</code>\n"
         f"Code: <b>{promo.code}</b>\n"
+        f"Target: <b>{target}</b>\n"
         f"Type: <b>{promo.discount_type.value}</b>\n"
         f"Value: <b>{promo.discount_value}</b>\n"
         f"Active: <b>{'yes' if promo.is_active else 'no'}</b>\n"
@@ -246,7 +250,27 @@ async def admin_promos_type_pick(call: CallbackQuery, state: FSMContext) -> None
         await call.answer("Сначала введите code", show_alert=True)
         return
     await state.update_data(discount_type=discount_type)
+    await state.set_state(AdminTicketStates.waiting_promo_target)
+    await edit_or_send(call.message, "Выберите назначение промокода:", reply_markup=admin_promo_target_keyboard())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:promo:target:"))
+async def admin_promos_target_pick(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    target = call.data.split(":")[-1]
+    if target not in {"balance", "subscription"}:
+        await call.answer("Неверное назначение", show_alert=True)
+        return
+    data = await state.get_data()
+    if not data.get("promo_code") or data.get("discount_type") not in {"percent", "fixed"}:
+        await call.answer("Сначала заполните код и тип", show_alert=True)
+        return
+    await state.update_data(promo_target=target)
     await state.set_state(AdminTicketStates.waiting_promo_value)
+    discount_type = data.get("discount_type")
     prompt = "Введите value в % (1..100):" if discount_type == "percent" else "Введите value в ₽:"
     await edit_or_send(call.message, prompt, reply_markup=admin_back_keyboard())
     await call.answer()
@@ -319,9 +343,15 @@ async def admin_promos_limit_input(message: Message, state: FSMContext, session:
 
     data = await state.get_data()
     code = data.get("promo_code")
+    target_raw = data.get("promo_target")
     discount_type_raw = data.get("discount_type")
     discount_value_raw = data.get("discount_value")
-    if not code or discount_type_raw not in {"percent", "fixed"} or not discount_value_raw:
+    if (
+        not code
+        or target_raw not in {"balance", "subscription"}
+        or discount_type_raw not in {"percent", "fixed"}
+        or not discount_value_raw
+    ):
         await state.clear()
         await send_or_answer(message, "Сессия истекла. Начните заново.")
         return
@@ -329,6 +359,7 @@ async def admin_promos_limit_input(message: Message, state: FSMContext, session:
     expires_at = datetime.fromisoformat(expires_raw) if expires_raw else None
     promo = PromoCode(
         code=str(code).upper(),
+        target=PromoTarget(target_raw),
         discount_type=DiscountType(discount_type_raw),
         discount_value=Decimal(str(discount_value_raw)),
         max_activations=usage_limit,

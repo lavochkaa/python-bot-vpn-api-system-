@@ -21,6 +21,18 @@ def amount_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def topup_preview_keyboard(has_promo: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if has_promo:
+        builder.button(text="❌ Убрать промокод", callback_data="balance:promo:clear")
+    else:
+        builder.button(text="🎟 Промокод", callback_data="balance:promo:enter")
+    builder.button(text="💳 Перейти к оплате", callback_data="balance:pay")
+    builder.button(text="🔙 Назад", callback_data="balance:topup")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def custom_amount_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🔙 Назад", callback_data="balance:topup")

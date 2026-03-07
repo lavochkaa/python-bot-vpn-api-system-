@@ -1,6 +1,5 @@
 from aiogram.fsm.state import State, StatesGroup
 
 
-class TopUpStates(StatesGroup):
-    waiting_custom_amount = State()
+class SubscriptionStates(StatesGroup):
     waiting_promo_code = State()

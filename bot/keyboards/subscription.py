@@ -15,6 +15,7 @@ def subscription_activated_keyboard() -> InlineKeyboardMarkup:
 def subscription_configurator_keyboard(
     selected_gb: int | None,
     selected_term_months: int | None,
+    has_promo: bool = False,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
@@ -26,8 +27,12 @@ def subscription_configurator_keyboard(
         prefix = "✅ " if term == selected_term_months else ""
         builder.button(text=f"{prefix}{term} мес", callback_data=f"sub_term_{term}")
 
+    if has_promo:
+        builder.button(text="❌ Убрать промокод", callback_data="sub_promo_clear")
+    else:
+        builder.button(text="🎟 Промокод", callback_data="sub_promo_enter")
     builder.button(text="💳 Оплатить", callback_data="sub_pay")
-    builder.adjust(3, 4, 1)
+    builder.adjust(3, 4, 2)
     return builder.as_markup()
 
 

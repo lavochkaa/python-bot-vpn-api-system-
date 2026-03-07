@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-from bot.db.models import PromoCode, DiscountType
+from bot.db.models import PromoCode, DiscountType, PromoTarget
 from bot.repositories.promo import PromoRepository
 from bot.repositories.user import UserRepository
 
@@ -11,7 +11,11 @@ class PromoService:
         self.user_repo = user_repo
 
     async def validate_and_apply(
-        self, code: str, user_id: int, base_amount: Decimal
+        self,
+        code: str,
+        user_id: int,
+        base_amount: Decimal,
+        target: PromoTarget | None = None,
     ) -> tuple[Decimal, PromoCode | None]:
         """
         Validate promo code and compute discounted amount.
@@ -31,6 +35,9 @@ class PromoService:
 
         if await self.repo.has_user_redeemed(promo.id, user_id):
             raise ValueError("Вы уже использовали этот промокод.")
+
+        if target is not None and promo.target is not None and promo.target != target:
+            raise ValueError("Этот промокод нельзя применить в выбранном разделе.")
 
         user = await self.user_repo.get_by_tg_id(user_id)
         if not user:

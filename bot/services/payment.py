@@ -2,6 +2,7 @@ from decimal import Decimal
 from bot.db.models import BalanceLedger, Payment, PaymentKind, PaymentStatus
 from bot.repositories.ledger import BalanceLedgerRepository
 from bot.repositories.payment import PaymentRepository
+from bot.repositories.promo import PromoRepository
 from bot.repositories.user import UserRepository
 from bot.providers.payment.base import PaymentInvoice, PaymentProvider
 
@@ -18,6 +19,18 @@ class PaymentService:
         self.ledger_repo = ledger_repo
         self.user_repo = user_repo
         self.provider = provider
+
+    async def _mark_promo_redeemed_if_needed(self, payment: Payment) -> None:
+        if not payment.promo_code_id:
+            return
+        repo = PromoRepository(self.payment_repo.session)
+        if await repo.has_user_redeemed(payment.promo_code_id, payment.user_id):
+            return
+        await repo.add_redemption(payment.promo_code_id, payment.user_id)
+        promo = await repo.get(payment.promo_code_id)
+        if promo:
+            promo.activations_count += 1
+            await repo.save(promo)
 
     async def initiate_topup(
         self, user_id: int, amount: Decimal, promo_code_id: int | None = None
@@ -84,6 +97,7 @@ class PaymentService:
         await self.payment_repo.session.commit()
         await self.payment_repo.session.refresh(payment)
         await self.user_repo.session.refresh(user)
+        await self._mark_promo_redeemed_if_needed(payment)
 
         await self.ledger_repo.save(
             BalanceLedger(
@@ -124,6 +138,7 @@ class PaymentService:
         await self.payment_repo.session.commit()
         await self.payment_repo.session.refresh(payment)
         await self.user_repo.session.refresh(user)
+        await self._mark_promo_redeemed_if_needed(payment)
 
         if payment.kind == PaymentKind.topup:
             await self.ledger_repo.save(

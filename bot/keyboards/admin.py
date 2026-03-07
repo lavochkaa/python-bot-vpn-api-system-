@@ -39,6 +39,15 @@ def admin_promo_type_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def admin_promo_target_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💳 Баланс", callback_data="admin:promo:target:balance")
+    builder.button(text="📦 Подписка", callback_data="admin:promo:target:subscription")
+    builder.button(text="🔙 Назад", callback_data="admin:promos")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def admin_tickets_keyboard(ticket_ids: list[int], active_filter: str = "open") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(

@@ -13,6 +13,10 @@ class DiscountType(str, enum.Enum):
     percent = "percent"
     fixed = "fixed"
 
+class PromoTarget(str, enum.Enum):
+    balance = "balance"
+    subscription = "subscription"
+
 
 class PaymentStatus(str, enum.Enum):
     pending = "pending"
@@ -98,6 +102,10 @@ class PromoCode(Base):
     code: Mapped[str] = mapped_column(String(64), unique=True)
     discount_type: Mapped[DiscountType] = mapped_column(PgEnum(DiscountType, name="discounttype"))
     discount_value: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    target: Mapped[PromoTarget | None] = mapped_column(
+        PgEnum(PromoTarget, name="promotarget"),
+        nullable=True,
+    )
     max_activations: Mapped[int | None] = mapped_column(Integer)       # None = unlimited
     activations_count: Mapped[int] = mapped_column(Integer, default=0)
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

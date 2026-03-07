@@ -8,6 +8,7 @@ class AdminTicketStates(StatesGroup):
     waiting_balance_amount = State()
     waiting_days_amount = State()
     waiting_promo_code = State()
+    waiting_promo_target = State()
     waiting_promo_value = State()
     waiting_promo_expires = State()
     waiting_promo_limit = State()
