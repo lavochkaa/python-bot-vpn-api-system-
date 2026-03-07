@@ -1,7 +1,7 @@
 """add promo target
 
 Revision ID: 0007_promo_target
-Revises: 0006_device_limits
+Revises: 0006
 Create Date: 2026-03-07
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "0007_promo_target"
-down_revision = "0006_device_limits"
+down_revision = "0006"
 branch_labels = None
 depends_on = None
 
@@ -25,4 +25,3 @@ def downgrade() -> None:
     op.drop_column("promo_codes", "target")
     promo_target = sa.Enum("balance", "subscription", name="promotarget")
     promo_target.drop(op.get_bind(), checkfirst=True)
-
