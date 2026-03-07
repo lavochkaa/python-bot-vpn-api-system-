@@ -8,7 +8,7 @@ def subscription_activated_keyboard(show_reset_traffic: bool = False) -> InlineK
     builder.button(text="🔌 Подключиться", callback_data="menu:connect")
     builder.button(text="🔄 Изменить тариф", callback_data="menu:subscription:configure")
     if show_reset_traffic:
-        builder.button(text="♻️ Сбросить гигабайты (79 ₽)", callback_data="sub_reset_traffic")
+        builder.button(text="♻️ Обновить гигабайты (79 ₽)", callback_data="sub_reset_traffic")
     builder.button(text="🔙 Назад", callback_data="menu:main")
     builder.adjust(1)
     return builder.as_markup()
@@ -34,7 +34,8 @@ def subscription_configurator_keyboard(
     else:
         builder.button(text="🎟 Промокод", callback_data="sub_promo_enter")
     builder.button(text="💳 Оплатить", callback_data="sub_pay")
-    builder.adjust(3, 4, 2)
+    builder.button(text="🔙 Назад", callback_data="menu:subscription")
+    builder.adjust(3, 4, 2, 1)
     return builder.as_markup()
 
 

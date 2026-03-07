@@ -98,7 +98,7 @@ def admin_user_manage_keyboard(user_id: int, has_subscription: bool) -> InlineKe
     builder.button(text="📅 Изменить дни подписки", callback_data=f"admin:user:edit_days:{user_id}")
     builder.button(text="📦 Изменить тариф", callback_data=f"admin:user:edit_plan:{user_id}")
     if has_subscription:
-        builder.button(text="♻️ Сбросить ГБ", callback_data=f"admin:user:reset_traffic:{user_id}")
+        builder.button(text="♻️ Обновить ГБ", callback_data=f"admin:user:reset_traffic:{user_id}")
     builder.button(text="✅ Сохранить изменения", callback_data=f"admin:user:apply:{user_id}")
     builder.button(text="🔎 Найти другого клиента", callback_data="admin:users")
     builder.button(text="🔙 Вернуться в админ-панель", callback_data="admin:menu")
