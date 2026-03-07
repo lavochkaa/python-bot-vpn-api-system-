@@ -1,4 +1,5 @@
 import csv
+import html
 import io
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -8,12 +9,14 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNet
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.db.models import DiscountType, PromoCode, PromoTarget, TicketSenderRole, TicketStatus
+from bot.db.models import DiscountType, PromoCode, PromoTarget, TicketSenderRole, TicketStatus, User
 from bot.keyboards.admin import (
     admin_back_keyboard,
+    admin_broadcast_preview_keyboard,
     admin_maintenance_keyboard,
     admin_menu_keyboard,
     admin_promo_delete_confirm_keyboard,
@@ -102,6 +105,19 @@ def _render_ticket_messages(messages) -> str:
 def _preview(text: str, limit: int = 120) -> str:
     normalized = " ".join(text.split())
     return normalized if len(normalized) <= limit else normalized[:limit] + "..."
+
+
+def _broadcast_preview_text(text: str | None, has_photo: bool) -> str:
+    body = (text or "").strip()
+    text_block = html.escape(_preview(body, limit=600)) if body else "—"
+    photo_block = "да" if has_photo else "нет"
+    return (
+        "📢 <b>Рассылка</b>\n\n"
+        "<b>Предпросмотр:</b>\n"
+        f"Текст: <b>{text_block}</b>\n"
+        f"Фото: <b>{photo_block}</b>\n\n"
+        "Отправьте новый текст или фото для обновления."
+    )
 
 
 async def _set_admin_anchor(state: FSMContext, message: Message) -> None:
@@ -276,6 +292,162 @@ async def admin_maintenance_set(call: CallbackQuery, state: FSMContext, session:
         reply_markup=admin_maintenance_keyboard(),
     )
     await call.answer("Статус обновлен")
+
+
+@router.callback_query(F.data == "admin:broadcast")
+async def admin_broadcast_start(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await _set_admin_anchor(state, call.message)
+    await state.set_state(AdminTicketStates.waiting_broadcast_text)
+    await edit_or_send(
+        call.message,
+        "📢 <b>Рассылка</b>\n\n"
+        "Отправьте текст рассылки.\n"
+        "После этого можно добавить фото (опционально) и нажать «Опубликовать».",
+        reply_markup=admin_back_keyboard(),
+    )
+    await call.answer()
+
+
+@router.message(AdminTicketStates.waiting_broadcast_text)
+async def admin_broadcast_text_input(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        await _admin_edit_message(message, state, "Доступ запрещен.")
+        return
+
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await _admin_edit_message(
+            message,
+            state,
+            "Нужен текст рассылки. Отправьте текст сообщением или подписью к фото.",
+            reply_markup=admin_back_keyboard(),
+        )
+        return
+
+    photo_file_id = None
+    if message.photo:
+        photo_file_id = message.photo[-1].file_id
+
+    await state.update_data(broadcast_text=text, broadcast_photo_file_id=photo_file_id or "")
+    await state.set_state(AdminTicketStates.waiting_broadcast_media)
+    await _admin_edit_message(
+        message,
+        state,
+        _broadcast_preview_text(text, bool(photo_file_id)),
+        reply_markup=admin_broadcast_preview_keyboard(has_photo=bool(photo_file_id)),
+    )
+
+
+@router.message(AdminTicketStates.waiting_broadcast_media)
+async def admin_broadcast_media_input(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        await _admin_edit_message(message, state, "Доступ запрещен.")
+        return
+
+    data = await state.get_data()
+    current_text = (data.get("broadcast_text") or "").strip()
+    current_photo = data.get("broadcast_photo_file_id") or ""
+
+    incoming_text = (message.text or message.caption or "").strip()
+    if incoming_text:
+        current_text = incoming_text
+
+    if message.photo:
+        current_photo = message.photo[-1].file_id
+
+    if not incoming_text and not message.photo:
+        await _admin_edit_message(
+            message,
+            state,
+            "Отправьте текст и/или фото для обновления рассылки.",
+            reply_markup=admin_broadcast_preview_keyboard(has_photo=bool(current_photo)),
+        )
+        return
+
+    await state.update_data(
+        broadcast_text=current_text,
+        broadcast_photo_file_id=current_photo,
+    )
+    await _admin_edit_message(
+        message,
+        state,
+        _broadcast_preview_text(current_text, bool(current_photo)),
+        reply_markup=admin_broadcast_preview_keyboard(has_photo=bool(current_photo)),
+    )
+
+
+@router.callback_query(F.data == "admin:broadcast:clear_photo")
+async def admin_broadcast_clear_photo(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    data = await state.get_data()
+    text = (data.get("broadcast_text") or "").strip()
+    if not text:
+        await call.answer("Сначала задайте текст", show_alert=True)
+        return
+    await state.update_data(broadcast_photo_file_id="")
+    await edit_or_send(
+        call.message,
+        _broadcast_preview_text(text, False),
+        reply_markup=admin_broadcast_preview_keyboard(has_photo=False),
+    )
+    await call.answer("Фото удалено")
+
+
+@router.callback_query(F.data == "admin:broadcast:publish")
+async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    data = await state.get_data()
+    text = (data.get("broadcast_text") or "").strip()
+    photo_file_id = (data.get("broadcast_photo_file_id") or "").strip()
+    if not text:
+        await call.answer("Сначала отправьте текст рассылки", show_alert=True)
+        return
+
+    await edit_or_send(call.message, "⏳ Публикую рассылку...")
+
+    rows = await session.execute(select(User.id))
+    user_ids = [row[0] for row in rows.all()]
+    total = len(user_ids)
+    sent_count = 0
+    fail_count = 0
+
+    for user_id in user_ids:
+        try:
+            if photo_file_id:
+                await call.bot.send_photo(
+                    chat_id=user_id,
+                    photo=photo_file_id,
+                    caption=text,
+                    parse_mode=None,
+                )
+            else:
+                await call.bot.send_message(chat_id=user_id, text=text, parse_mode=None)
+            sent_count += 1
+        except TelegramAPIError:
+            fail_count += 1
+
+    await state.clear()
+    await edit_or_send(
+        call.message,
+        "✅ <b>Рассылка завершена</b>\n\n"
+        f"Всего получателей: <b>{total}</b>\n"
+        f"Доставлено: <b>{sent_count}</b>\n"
+        f"Ошибок: <b>{fail_count}</b>",
+        reply_markup=admin_menu_keyboard(),
+    )
+    await _set_admin_anchor(state, call.message)
+    await call.answer("Готово")
 
 
 @router.callback_query(F.data == "admin:promos:create")

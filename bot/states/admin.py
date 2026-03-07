@@ -15,3 +15,5 @@ class AdminTicketStates(StatesGroup):
     waiting_promo_edit_value = State()
     waiting_promo_edit_expires = State()
     waiting_promo_edit_limit = State()
+    waiting_broadcast_text = State()
+    waiting_broadcast_media = State()

@@ -8,6 +8,7 @@ def admin_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="👤 Клиенты", callback_data="admin:users")
     builder.button(text="🎟 Промокоды", callback_data="admin:promos")
     builder.button(text="🎫 Тикеты", callback_data="admin:tickets")
+    builder.button(text="📢 Оповестить всех", callback_data="admin:broadcast")
     builder.button(text="🛠 Техработы", callback_data="admin:maintenance")
     builder.button(text="📊 Статистика", callback_data="admin:stats")
     builder.button(text="🔙 В меню", callback_data="menu:main")
@@ -27,6 +28,16 @@ def admin_maintenance_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="🔒 Закрыть бота", callback_data="admin:maintenance:set:close")
     builder.button(text="✅ Открыть бота", callback_data="admin:maintenance:set:open")
     builder.button(text="🔙 Назад", callback_data="admin:menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_broadcast_preview_keyboard(has_photo: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Опубликовать", callback_data="admin:broadcast:publish")
+    if has_photo:
+        builder.button(text="🗑 Убрать фото", callback_data="admin:broadcast:clear_photo")
+    builder.button(text="🔙 Отмена", callback_data="admin:menu")
     builder.adjust(1)
     return builder.as_markup()
 
