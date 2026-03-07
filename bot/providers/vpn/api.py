@@ -37,3 +37,13 @@ class ApiVpnKeyProvider(VpnKeyProvider):
 
     async def revoke_key(self, key: str) -> None:
         return None
+
+    async def reset_user_traffic(
+        self,
+        *,
+        user_id: int,
+        subscription_uuid: str | None = None,
+        provider_subscription_id: str | None = None,
+    ) -> bool:
+        _ = (user_id, subscription_uuid, provider_subscription_id)
+        return False

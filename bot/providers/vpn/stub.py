@@ -20,3 +20,13 @@ class StubVpnKeyProvider(VpnKeyProvider):
     async def revoke_key(self, key: str) -> None:
         # TODO: call VPN panel API to revoke key
         pass
+
+    async def reset_user_traffic(
+        self,
+        *,
+        user_id: int,
+        subscription_uuid: str | None = None,
+        provider_subscription_id: str | None = None,
+    ) -> bool:
+        _ = (user_id, subscription_uuid, provider_subscription_id)
+        return False

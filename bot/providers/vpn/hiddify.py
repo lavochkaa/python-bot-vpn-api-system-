@@ -107,6 +107,39 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
     async def revoke_key(self, key: str) -> None:
         return None
 
+    async def reset_user_traffic(
+        self,
+        *,
+        user_id: int,
+        subscription_uuid: str | None = None,
+        provider_subscription_id: str | None = None,
+    ) -> bool:
+        api_base, api_key = self._resolve_api_access()
+        refs: list[str] = []
+        for value in (subscription_uuid, provider_subscription_id, str(user_id), f"user_{user_id}"):
+            if value and str(value).strip() and str(value) not in refs:
+                refs.append(str(value).strip())
+
+        request_timeout = max(5, int(settings.vpn_api_timeout_seconds or self._REQUEST_TIMEOUT_SECONDS))
+        connector = self._build_connector()
+        async with aiohttp.ClientSession(connector=connector) as session:
+            for method, endpoint, headers, params, payload in self._build_reset_attempts(api_base, api_key, refs):
+                try:
+                    response = await session.request(
+                        method,
+                        endpoint,
+                        headers=headers,
+                        params=params,
+                        json=payload,
+                        timeout=request_timeout,
+                    )
+                    if response.status < 400:
+                        logger.info("Hiddify traffic reset accepted: %s %s", method, endpoint)
+                        return True
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    continue
+        return False
+
     def _resolve_api_access(self) -> tuple[str, str]:
         base = (settings.vpn_api_base_url or "").strip().rstrip("/")
         if not base:
@@ -276,6 +309,75 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                             for trailing in (True, False):
                                 url = f"{base}/{endpoint}/" if trailing else f"{base}/{endpoint}"
                                 attempts.append((method, url, headers, params))
+        return attempts
+
+    def _build_reset_attempts(
+        self,
+        api_base: str,
+        api_key: str,
+        refs: list[str],
+    ) -> list[tuple[str, str, dict[str, str], dict[str, str], dict[str, Any] | None]]:
+        clean_base = api_base.rstrip("/")
+        path_bases = [clean_base] if clean_base.endswith("/api/v2/admin") else [f"{clean_base}/api/v2/admin"]
+        auth_headers = (
+            {"Hiddify-API-Key": api_key},
+            {"Authorization": f"Bearer {api_key}"},
+        )
+        payloads: list[dict[str, Any] | None] = [
+            {"reset_usage": True},
+            {"reset_traffic": True},
+            {"reset": True},
+            {"current_usage_GB": 0},
+            {"usage_limit_used_GB": 0},
+            {"used_traffic": 0},
+            {"traffic_used": 0},
+            None,
+        ]
+        attempts: list[tuple[str, str, dict[str, str], dict[str, str], dict[str, Any] | None]] = []
+        for base in path_bases:
+            for headers in auth_headers:
+                for ref in refs:
+                    attempts.extend(
+                        self._build_reset_ref_attempts(
+                            base=base,
+                            headers=headers,
+                            ref=ref,
+                            payloads=payloads,
+                        )
+                    )
+                    if "-" in ref:
+                        attempts.append(("POST", f"{base}/user/", headers, {"uuid": ref, "reset_usage": "true"}, None))
+                        attempts.append(("POST", f"{base}/users/", headers, {"uuid": ref, "reset_usage": "true"}, None))
+        return attempts
+
+    def _build_reset_ref_attempts(
+        self,
+        *,
+        base: str,
+        headers: dict[str, str],
+        ref: str,
+        payloads: list[dict[str, Any] | None],
+    ) -> list[tuple[str, str, dict[str, str], dict[str, str], dict[str, Any] | None]]:
+        attempts: list[tuple[str, str, dict[str, str], dict[str, str], dict[str, Any] | None]] = []
+        paths = (
+            f"{base}/user/{ref}/reset/",
+            f"{base}/user/{ref}/reset",
+            f"{base}/users/{ref}/reset/",
+            f"{base}/users/{ref}/reset",
+            f"{base}/user/{ref}/reset-usage/",
+            f"{base}/user/{ref}/reset-usage",
+            f"{base}/users/{ref}/reset-usage/",
+            f"{base}/users/{ref}/reset-usage",
+            f"{base}/user/{ref}/",
+            f"{base}/user/{ref}",
+            f"{base}/users/{ref}/",
+            f"{base}/users/{ref}",
+        )
+        for path in paths:
+            for payload in payloads:
+                attempts.append(("POST", path, headers, {}, payload))
+                attempts.append(("PATCH", path, headers, {}, payload))
+                attempts.append(("PUT", path, headers, {}, payload))
         return attempts
 
     async def _safe_json(self, response: aiohttp.ClientResponse, body: str) -> Any:

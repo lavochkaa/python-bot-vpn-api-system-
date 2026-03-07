@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import PromoTarget
+from bot.db.models import BalanceLedger, PromoTarget
 from bot.constants.subscription_pricing import (
     DURATION_MONTH_OPTIONS,
     DURATION_MONTH_TO_DAYS,
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_PLAN_TYPE = "pc"
 DEFAULT_PLAN_SLUG = "vpn"
 DEFAULT_BUILD_PRESET = "max"
+TRAFFIC_RESET_PRICE = Decimal("79")
 
 
 async def _edit_only(message: Message, text: str, reply_markup=None) -> None:
@@ -250,6 +251,18 @@ def _build_service(session: AsyncSession) -> SubscriptionService:
     )
 
 
+def _build_active_subscription_text(sub) -> str:
+    traffic_title = f"{sub.traffic_gb} ГБ" if sub.traffic_gb else "—"
+    expires_title = sub.expires_at.strftime("%d.%m.%Y") if sub.expires_at else "—"
+    return (
+        "📦 <b>У вас уже есть активная подписка</b>\n\n"
+        "<b>Текущие параметры:</b>\n"
+        f"• Трафик: <b>{traffic_title}</b>\n"
+        f"• Действует до: <b>{expires_title}</b>\n\n"
+        "Вы можете изменить конфигурацию или сбросить трафик."
+    )
+
+
 async def _render_configurator(
     target: Message,
     state: FSMContext,
@@ -284,7 +297,29 @@ async def _render_configurator(
 
 
 @router.callback_query(F.data == "menu:subscription")
-async def subscription_menu(call: CallbackQuery, state: FSMContext) -> None:
+async def subscription_menu(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    sub = await SubscriptionRepository(session).get_active(call.from_user.id)
+    if sub:
+        await _edit_only(
+            call.message,
+            _build_active_subscription_text(sub),
+            reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
+        )
+        await call.answer()
+        return
+    await _render_configurator(
+        call.message,
+        state,
+        traffic_gb=None,
+        term_months=None,
+        with_banner=True,
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "menu:subscription:configure")
+async def subscription_configure_menu(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await _render_configurator(
         call.message,
@@ -294,6 +329,81 @@ async def subscription_menu(call: CallbackQuery, state: FSMContext) -> None:
         with_banner=True,
     )
     await call.answer()
+
+
+@router.callback_query(F.data == "sub_reset_traffic")
+async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await state.clear()
+    sub_repo = SubscriptionRepository(session)
+    user_repo = UserRepository(session)
+
+    active_sub = await sub_repo.get_active(call.from_user.id)
+    if not active_sub:
+        await call.answer("Активной подписки нет.", show_alert=True)
+        await _render_configurator(
+            call.message,
+            state,
+            traffic_gb=None,
+            term_months=None,
+            with_banner=False,
+        )
+        return
+
+    user = await user_repo.get_by_tg_id_for_update(call.from_user.id)
+    if not user:
+        await call.answer("Пользователь не найден.", show_alert=True)
+        return
+    if user.balance < TRAFFIC_RESET_PRICE:
+        await _edit_only(
+            call.message,
+            "Недостаточно средств для сброса трафика.\n"
+            f"Баланс: <b>{user.balance} ₽</b>\n"
+            f"Стоимость сброса: <b>{TRAFFIC_RESET_PRICE} ₽</b>",
+            reply_markup=insufficient_balance_keyboard(),
+        )
+        await call.answer("Недостаточно средств", show_alert=True)
+        return
+
+    provider = build_vpn_provider()
+    try:
+        ok = await provider.reset_user_traffic(
+            user_id=user.id,
+            subscription_uuid=user.subscription_uuid,
+            provider_subscription_id=active_sub.provider_subscription_id,
+        )
+    except Exception:
+        logger.exception("Traffic reset call failed for user_id=%s", user.id)
+        ok = False
+
+    if not ok:
+        await session.rollback()
+        await _edit_only(
+            call.message,
+            "❌ Не удалось выполнить сброс трафика в панели.\n"
+            "Попробуйте позже или обратитесь в поддержку.",
+            reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
+        )
+        await call.answer("Сброс не выполнен", show_alert=True)
+        return
+
+    user.balance -= TRAFFIC_RESET_PRICE
+    session.add(
+        BalanceLedger(
+            user_id=user.id,
+            amount=-TRAFFIC_RESET_PRICE,
+            reason="subscription_traffic_reset",
+        )
+    )
+    await session.commit()
+
+    await _edit_only(
+        call.message,
+        "✅ Трафик успешно сброшен.\n"
+        f"Списано: <b>{TRAFFIC_RESET_PRICE} ₽</b>\n"
+        f"Текущий баланс: <b>{user.balance} ₽</b>",
+        reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
+    )
+    await call.answer("Трафик сброшен")
 
 
 @router.callback_query(F.data.startswith("sub_gb_"))
@@ -568,6 +678,6 @@ async def _finish_purchase(
         f"Действует до: <b>{sub.expires_at.strftime('%d.%m.%Y')}</b>"
         f"{key_text}\n\n"
         "Кнопка «Подключиться» откроет инструкцию и подключение.",
-        reply_markup=subscription_activated_keyboard(),
+        reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
     )
     await state.clear()

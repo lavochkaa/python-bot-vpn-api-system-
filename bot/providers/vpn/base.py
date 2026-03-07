@@ -23,3 +23,16 @@ class VpnKeyProvider(ABC):
     @abstractmethod
     async def revoke_key(self, key: str) -> None:
         """Revoke an existing VPN key."""
+
+    async def reset_user_traffic(
+        self,
+        *,
+        user_id: int,
+        subscription_uuid: str | None = None,
+        provider_subscription_id: str | None = None,
+    ) -> bool:
+        """
+        Reset user traffic counter in provider panel.
+        Returns True when provider confirms/accepts reset action.
+        """
+        return False
