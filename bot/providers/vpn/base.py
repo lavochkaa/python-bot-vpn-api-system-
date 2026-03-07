@@ -36,3 +36,16 @@ class VpnKeyProvider(ABC):
         Returns True when provider confirms/accepts reset action.
         """
         return False
+
+    async def get_user_usage(
+        self,
+        *,
+        user_id: int,
+        subscription_uuid: str | None = None,
+        provider_subscription_id: str | None = None,
+    ) -> dict | None:
+        """
+        Return provider-side usage info when available.
+        Expected keys (optional): current_usage_gb, usage_limit_gb.
+        """
+        return None

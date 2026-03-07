@@ -162,6 +162,42 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                     continue
         return False
 
+    async def get_user_usage(
+        self,
+        *,
+        user_id: int,
+        subscription_uuid: str | None = None,
+        provider_subscription_id: str | None = None,
+    ) -> dict | None:
+        api_base, api_key = self._resolve_api_access()
+        request_timeout = max(5, int(settings.vpn_api_timeout_seconds or self._REQUEST_TIMEOUT_SECONDS))
+        connector = self._build_connector()
+        refs = [str(user_id)]
+        for value in (subscription_uuid, provider_subscription_id):
+            if value and str(value).strip():
+                refs.append(str(value).strip())
+
+        async with aiohttp.ClientSession(connector=connector) as session:
+            payload = await self._fetch_user_payload_by_tg_id(
+                session=session,
+                api_base=api_base,
+                api_key=api_key,
+                user_id=user_id,
+                timeout=request_timeout,
+            )
+            user_obj = self._pick_user_object(payload, refs)
+            if not user_obj:
+                return None
+
+            current = self._to_float(user_obj.get("current_usage_GB"))
+            limit = self._to_float(user_obj.get("usage_limit_GB"))
+            if current is None and limit is None:
+                return None
+            return {
+                "current_usage_gb": current,
+                "usage_limit_gb": limit,
+            }
+
     async def _fetch_user_payload_by_tg_id(
         self,
         *,
@@ -196,6 +232,43 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                         except (aiohttp.ClientError, asyncio.TimeoutError):
                             continue
         return None
+
+    def _pick_user_object(self, payload: Any, refs: list[str]) -> dict[str, Any] | None:
+        if isinstance(payload, dict):
+            if "current_usage_GB" in payload or "usage_limit_GB" in payload:
+                return payload
+            return None
+        if not isinstance(payload, list):
+            return None
+
+        ref_values = {r for r in refs if r}
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            hay = {
+                str(item.get("id", "")),
+                str(item.get("uuid", "")),
+                str(item.get("telegram_id", "")),
+                str(item.get("user_id", "")),
+                str(item.get("username", "")),
+                str(item.get("name", "")),
+                str(item.get("comment", "")),
+            }
+            if any(ref and any(ref in h for h in hay) for ref in ref_values):
+                return item
+
+        for item in payload:
+            if isinstance(item, dict) and ("current_usage_GB" in item or "usage_limit_GB" in item):
+                return item
+        return None
+
+    def _to_float(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _resolve_api_access(self) -> tuple[str, str]:
         base = (settings.vpn_api_base_url or "").strip().rstrip("/")

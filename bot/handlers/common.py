@@ -6,9 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.repositories.user import UserRepository
-from bot.keyboards.main_menu import channel_check_keyboard, main_menu_keyboard
+from bot.keyboards.main_menu import (
+    channel_check_keyboard,
+    main_menu_keyboard,
+    subscription_warning_keyboard,
+)
 from bot.utils.channel_subscription import check_channel_subscription
-from bot.utils.formatters import format_main_menu
+from bot.utils.formatters import build_main_menu_snapshot
 from bot.utils.messages import edit_or_send_banner, send_or_answer_banner
 
 router = Router()
@@ -24,6 +28,29 @@ async def _safe_edit_text(call: CallbackQuery, text: str, reply_markup) -> None:
         )
     except TelegramBadRequest:
         pass
+
+
+async def _maybe_send_subscription_warning(target: Message, *, remaining_gb: float | None, remaining_days: int | None) -> None:
+    warn_gb = remaining_gb is not None and remaining_gb <= 1.0
+    warn_day = remaining_days is not None and remaining_days <= 1
+    if not warn_gb and not warn_day:
+        return
+
+    parts: list[str] = ["⚠️ <b>Внимание по подписке</b>"]
+    if warn_gb:
+        parts.append(f"• Осталось трафика: <b>{round(max(remaining_gb or 0.0, 0.0), 2)} ГБ</b>")
+    if warn_day:
+        parts.append("• До окончания подписки: <b>1 день или меньше</b>")
+    parts.append("Выберите действие:")
+    text = "\n".join(parts)
+
+    await target.answer(
+        text,
+        reply_markup=subscription_warning_keyboard(
+            show_refresh_gb=warn_gb,
+            show_renew=warn_day,
+        ),
+    )
 
 
 @router.message(CommandStart())
@@ -51,16 +78,22 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
         return
 
     repo = UserRepository(session)
-    user, created = await repo.get_or_create(
+    user, _ = await repo.get_or_create(
         tg_id=message.from_user.id,
         username=message.from_user.username,
         full_name=message.from_user.full_name,
     )
+    snapshot = await build_main_menu_snapshot(user, session)
     await send_or_answer_banner(
         message,
-        await format_main_menu(user, session),
+        snapshot.text,
         reply_markup=main_menu_keyboard(),
         banner_path=settings.message_banner_main_path,
+    )
+    await _maybe_send_subscription_warning(
+        message,
+        remaining_gb=snapshot.remaining_gb,
+        remaining_days=snapshot.remaining_days,
     )
 
 
@@ -90,7 +123,14 @@ async def check_subscription_callback(call: CallbackQuery, session: AsyncSession
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
-    await _safe_edit_text(call, await format_main_menu(user, session), main_menu_keyboard())
+    snapshot = await build_main_menu_snapshot(user, session)
+    await _safe_edit_text(call, snapshot.text, main_menu_keyboard())
+    if call.message:
+        await _maybe_send_subscription_warning(
+            call.message,
+            remaining_gb=snapshot.remaining_gb,
+            remaining_days=snapshot.remaining_days,
+        )
     await call.answer("✅ Подписка подтверждена!")
 
 
@@ -102,5 +142,12 @@ async def back_to_menu(call: CallbackQuery, session: AsyncSession) -> None:
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
-    await _safe_edit_text(call, await format_main_menu(user, session), main_menu_keyboard())
+    snapshot = await build_main_menu_snapshot(user, session)
+    await _safe_edit_text(call, snapshot.text, main_menu_keyboard())
+    if call.message:
+        await _maybe_send_subscription_warning(
+            call.message,
+            remaining_gb=snapshot.remaining_gb,
+            remaining_days=snapshot.remaining_days,
+        )
     await call.answer()

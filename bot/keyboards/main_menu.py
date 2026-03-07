@@ -24,3 +24,18 @@ def channel_check_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="✅ Проверить", callback_data="check:subscription")
     builder.adjust(1)
     return builder.as_markup()
+
+
+def subscription_warning_keyboard(
+    *,
+    show_refresh_gb: bool,
+    show_renew: bool,
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if show_refresh_gb:
+        builder.button(text="♻️ Обновить гигабайты", callback_data="sub_reset_traffic")
+    if show_renew:
+        builder.button(text="🔄 Продлить подписку", callback_data="menu:subscription:configure")
+    builder.button(text="📦 Открыть подписку", callback_data="menu:subscription")
+    builder.adjust(1)
+    return builder.as_markup()
