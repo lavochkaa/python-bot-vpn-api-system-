@@ -4,12 +4,11 @@ import logging
 import re
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.config import settings
 from bot.constants.subscription_pricing import (
     DURATION_MONTH_OPTIONS,
     DURATION_MONTH_TO_DAYS,
@@ -28,7 +27,7 @@ from bot.repositories.subscription import SubscriptionRepository
 from bot.repositories.user import UserRepository
 from bot.repositories.vpn_key import VpnKeyRepository
 from bot.services.subscription import SubscriptionService
-from bot.utils.messages import edit_or_send, edit_or_send_banner
+from bot.utils.messages import _short_text
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -36,6 +35,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_PLAN_TYPE = "pc"
 DEFAULT_PLAN_SLUG = "vpn"
 DEFAULT_BUILD_PRESET = "max"
+
+
+async def _edit_only(message: Message, text: str, reply_markup=None) -> None:
+    try:
+        await message.edit_text(_short_text(text), reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            return
+        if "can't parse entities" in err:
+            safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
+            try:
+                await message.edit_text(_short_text(safe_plain), reply_markup=reply_markup)
+            except TelegramBadRequest:
+                return
+            return
+        # In this flow, do not send extra messages as fallback.
+        return
+    except TelegramNetworkError:
+        return
 
 
 def _safe_error_text(exc: Exception) -> str:
@@ -112,16 +131,8 @@ async def _render_configurator(
 
     text = _build_configurator_text(traffic_gb, term_months)
     keyboard = subscription_configurator_keyboard(traffic_gb, term_months)
-    if with_banner:
-        await edit_or_send_banner(
-            target,
-            text,
-            reply_markup=keyboard,
-            banner_path=settings.message_banner_subscription_new_path,
-        )
-        return
-
-    await edit_or_send(target, text, reply_markup=keyboard)
+    _ = with_banner
+    await _edit_only(target, text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "menu:subscription")
@@ -218,14 +229,14 @@ async def subscription_pay(call: CallbackQuery, state: FSMContext, session: Asyn
             final_price=price,
         )
     except ValueError as exc:
-        await edit_or_send(
+        await _edit_only(
             call.message,
             f"❌ {_safe_error_text(exc)}\n\nПроверьте настройки API в .env и попробуйте снова.",
             reply_markup=subscription_configurator_keyboard(traffic_gb, term_months),
         )
     except Exception:
         logger.exception("Unexpected error while finishing subscription purchase")
-        await edit_or_send(
+        await _edit_only(
             call.message,
             "❌ Ошибка при оформлении подписки. Попробуйте еще раз через минуту.",
             reply_markup=subscription_configurator_keyboard(traffic_gb, term_months),
@@ -242,7 +253,7 @@ async def _finish_purchase(
     duration_days: int,
     final_price: Decimal,
 ) -> None:
-    await edit_or_send(message, "⏳ Оформляю подписку, подождите...")
+    await _edit_only(message, "⏳ Оформляю подписку, подождите...")
 
     plan_id = await _resolve_plan_id_by_slug(session, DEFAULT_PLAN_SLUG)
     if not plan_id:
@@ -250,7 +261,7 @@ async def _finish_purchase(
 
     user = await UserRepository(session).get_by_tg_id(user_id)
     if not user or user.balance < final_price:
-        await edit_or_send(
+        await _edit_only(
             message,
             f"Недостаточно средств.\nБаланс: <b>{user.balance if user else 0} ₽</b>\n"
             f"Нужно: <b>{final_price} ₽</b>",
@@ -281,7 +292,7 @@ async def _finish_purchase(
         else:
             key_text = "\n\n🔌 Подписка готова. Откройте раздел «Подключиться», чтобы получить конфиг."
 
-    await edit_or_send(
+    await _edit_only(
         message,
         "✅ Подписка активирована.\n"
         f"Действует до: <b>{sub.expires_at.strftime('%d.%m.%Y')}</b>"
