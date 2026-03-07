@@ -746,8 +746,15 @@ async def admin_user_edit_plan(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("admin:user:reset_traffic:"))
 async def admin_user_reset_traffic(call: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    try:
+        await call.answer("Выполняю сброс трафика...")
+    except TelegramBadRequest:
+        pass
     if not _is_admin(call.from_user.id):
-        await call.answer("Нет доступа", show_alert=True)
+        try:
+            await call.answer("Нет доступа", show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
     user_id = int(call.data.split(":")[-1])
 
@@ -755,11 +762,17 @@ async def admin_user_reset_traffic(call: CallbackQuery, session: AsyncSession, s
     user_repo = UserRepository(session)
     sub = await sub_repo.get_active(user_id)
     if not sub:
-        await call.answer("У пользователя нет активной подписки.", show_alert=True)
+        try:
+            await call.answer("У пользователя нет активной подписки.", show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
     user = await user_repo.get_by_tg_id(user_id)
     if not user:
-        await call.answer("Пользователь не найден.", show_alert=True)
+        try:
+            await call.answer("Пользователь не найден.", show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     provider = build_vpn_provider()
@@ -773,12 +786,18 @@ async def admin_user_reset_traffic(call: CallbackQuery, session: AsyncSession, s
         ok = False
 
     if not ok:
-        await call.answer("Сброс в панели не выполнен.", show_alert=True)
+        try:
+            await call.answer("Сброс в панели не выполнен.", show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     text, has_sub = await _render_user_profile_with_draft(user_id, session, state)
     await edit_or_send(call.message, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
-    await call.answer("Трафик успешно сброшен")
+    try:
+        await call.answer("Трафик успешно сброшен")
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("admin:user:balance_op:"))

@@ -333,13 +333,20 @@ async def subscription_configure_menu(call: CallbackQuery, state: FSMContext) ->
 
 @router.callback_query(F.data == "sub_reset_traffic")
 async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        await call.answer("Выполняю сброс трафика...")
+    except TelegramBadRequest:
+        pass
     await state.clear()
     sub_repo = SubscriptionRepository(session)
     user_repo = UserRepository(session)
 
     active_sub = await sub_repo.get_active(call.from_user.id)
     if not active_sub:
-        await call.answer("Активной подписки нет.", show_alert=True)
+        try:
+            await call.answer("Активной подписки нет.", show_alert=True)
+        except TelegramBadRequest:
+            pass
         await _render_configurator(
             call.message,
             state,
@@ -351,7 +358,10 @@ async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, ses
 
     user = await user_repo.get_by_tg_id_for_update(call.from_user.id)
     if not user:
-        await call.answer("Пользователь не найден.", show_alert=True)
+        try:
+            await call.answer("Пользователь не найден.", show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
     if user.balance < TRAFFIC_RESET_PRICE:
         await _edit_only(
@@ -361,7 +371,10 @@ async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, ses
             f"Стоимость сброса: <b>{TRAFFIC_RESET_PRICE} ₽</b>",
             reply_markup=insufficient_balance_keyboard(),
         )
-        await call.answer("Недостаточно средств", show_alert=True)
+        try:
+            await call.answer("Недостаточно средств", show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     provider = build_vpn_provider()
@@ -383,7 +396,10 @@ async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, ses
             "Попробуйте позже или обратитесь в поддержку.",
             reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
         )
-        await call.answer("Сброс не выполнен", show_alert=True)
+        try:
+            await call.answer("Сброс не выполнен", show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     user.balance -= TRAFFIC_RESET_PRICE
@@ -403,7 +419,10 @@ async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, ses
         f"Текущий баланс: <b>{user.balance} ₽</b>",
         reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
     )
-    await call.answer("Трафик сброшен")
+    try:
+        await call.answer("Трафик сброшен")
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("sub_gb_"))
