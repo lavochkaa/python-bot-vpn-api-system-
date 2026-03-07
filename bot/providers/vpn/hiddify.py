@@ -123,6 +123,20 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
         request_timeout = max(5, int(settings.vpn_api_timeout_seconds or self._REQUEST_TIMEOUT_SECONDS))
         connector = self._build_connector()
         async with aiohttp.ClientSession(connector=connector) as session:
+            # Resolve panel-internal user identifiers by telegram id first.
+            resolved = await self._fetch_user_payload_by_tg_id(
+                session=session,
+                api_base=api_base,
+                api_key=api_key,
+                user_id=user_id,
+                timeout=request_timeout,
+            )
+            if resolved is not None:
+                resolved_refs = self._collect_user_refs(resolved)
+                for rid in resolved_refs.get("ids", []):
+                    if rid not in refs:
+                        refs.append(rid)
+
             for method, endpoint, headers, params, payload in self._build_reset_attempts(api_base, api_key, refs):
                 try:
                     response = await session.request(
@@ -147,6 +161,41 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                 except (aiohttp.ClientError, asyncio.TimeoutError):
                     continue
         return False
+
+    async def _fetch_user_payload_by_tg_id(
+        self,
+        *,
+        session: aiohttp.ClientSession,
+        api_base: str,
+        api_key: str,
+        user_id: int,
+        timeout: int,
+    ) -> Any | None:
+        clean_base = api_base.rstrip("/")
+        path_bases = [clean_base] if clean_base.endswith("/api/v2/admin") else [f"{clean_base}/api/v2/admin"]
+        auth_headers = (
+            {"Hiddify-API-Key": api_key},
+            {"Authorization": f"Bearer {api_key}"},
+        )
+        params_candidates = (
+            {"id": str(user_id)},
+            {"user_id": str(user_id)},
+            {"telegram_id": str(user_id)},
+            {"tg_id": str(user_id)},
+        )
+        for base in path_bases:
+            for headers in auth_headers:
+                for params in params_candidates:
+                    for url in (f"{base}/user/", f"{base}/user"):
+                        try:
+                            response = await session.get(url, headers=headers, params=params, timeout=timeout)
+                            if response.status >= 400:
+                                continue
+                            body = await response.text()
+                            return await self._safe_json(response, body)
+                        except (aiohttp.ClientError, asyncio.TimeoutError):
+                            continue
+        return None
 
     def _resolve_api_access(self) -> tuple[str, str]:
         base = (settings.vpn_api_base_url or "").strip().rstrip("/")
@@ -356,6 +405,8 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
                             body_identity["user_id"] = int(ref)
                         for payload in payloads:
                             merged_payload = {**body_identity, **(payload or {})}
+                            attempts.append(("POST", root_url_slash, headers, {}, merged_payload))
+                            attempts.append(("POST", root_url_plain, headers, {}, merged_payload))
                             attempts.append(("PATCH", root_url_slash, headers, {}, merged_payload))
                             attempts.append(("PATCH", root_url_plain, headers, {}, merged_payload))
                             attempts.append(("PUT", root_url_slash, headers, {}, merged_payload))
