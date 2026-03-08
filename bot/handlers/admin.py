@@ -476,6 +476,11 @@ async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, sessio
         await call.answer("Нет доступа", show_alert=True)
         return
 
+    try:
+        await call.answer("Запускаю рассылку...")
+    except TelegramBadRequest:
+        pass
+
     data = await state.get_data()
     text = data.get("broadcast_text") or ""
     entities = _deserialize_entities(data.get("broadcast_entities") or [])
@@ -523,7 +528,6 @@ async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, sessio
         reply_markup=admin_menu_keyboard(),
     )
     await _set_admin_anchor(state, call.message)
-    await call.answer("Готово")
 
 
 @router.callback_query(F.data == "admin:promos:create")
