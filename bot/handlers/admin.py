@@ -32,17 +32,24 @@ from bot.keyboards.admin import (
 )
 from bot.providers.vpn.factory import build_vpn_provider
 from bot.repositories.app_setting import AppSettingRepository
+from bot.repositories.ledger import BalanceLedgerRepository
 from bot.repositories.payment import PaymentRepository
+from bot.repositories.plan import PlanRepository
 from bot.repositories.promo import PromoRepository
 from bot.repositories.subscription import SubscriptionRepository
 from bot.repositories.support import SupportRepository
 from bot.repositories.user import UserRepository
+from bot.repositories.vpn_key import VpnKeyRepository
 from bot.states.admin import AdminTicketStates
+from bot.services.subscription import SubscriptionService
 from bot.utils.messages import edit_or_send, send_or_answer, send_to_chat
 
 router = Router()
 PROMO_PAGE_SIZE = 10
 MAINTENANCE_KEY = "maintenance_mode"
+TRANSFER_PLAN_SLUG = "vpn"
+TRANSFER_PLAN_TYPE = "pc"
+TRANSFER_BUILD_PRESET = "max"
 
 
 def _is_admin(user_id: int) -> bool:
@@ -105,6 +112,25 @@ def _render_ticket_messages(messages) -> str:
 def _preview(text: str, limit: int = 120) -> str:
     normalized = " ".join(text.split())
     return normalized if len(normalized) <= limit else normalized[:limit] + "..."
+
+
+async def _resolve_plan_id_by_slug(session: AsyncSession, slug: str) -> int | None:
+    plans = await PlanRepository(session).get_active_plans()
+    for plan in plans:
+        if plan.slug == slug:
+            return plan.id
+    return None
+
+
+def _build_subscription_service(session: AsyncSession) -> SubscriptionService:
+    return SubscriptionService(
+        SubscriptionRepository(session),
+        PlanRepository(session),
+        UserRepository(session),
+        BalanceLedgerRepository(session),
+        VpnKeyRepository(session),
+        build_vpn_provider(),
+    )
 
 
 def _utf16_len(value: str) -> int:
@@ -1028,6 +1054,23 @@ async def admin_user_edit_days(call: CallbackQuery) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data.startswith("admin:user:transfer_days:"))
+async def admin_user_transfer_days_start(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await _set_admin_anchor(state, call.message)
+    user_id = int(call.data.split(":")[-1])
+    await state.set_state(AdminTicketStates.waiting_transfer_days)
+    await state.update_data(transfer_user_id=user_id)
+    await edit_or_send(
+        call.message,
+        f"Введите количество дней переноса для пользователя <code>{user_id}</code>:",
+        reply_markup=admin_back_keyboard(),
+    )
+    await call.answer()
+
+
 @router.callback_query(F.data.startswith("admin:user:edit_plan:"))
 async def admin_user_edit_plan(call: CallbackQuery, state: FSMContext) -> None:
     if not _is_admin(call.from_user.id):
@@ -1192,6 +1235,70 @@ async def admin_user_days_amount_input(message: Message, state: FSMContext, sess
     await state.set_state(None)
     text, has_sub = await _render_user_profile_with_draft(user_id, session, state)
     await _admin_edit_message(message, state, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
+
+
+@router.message(AdminTicketStates.waiting_transfer_days)
+async def admin_user_transfer_days_input(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        await _admin_edit_message(message, state, "Доступ запрещен.")
+        return
+    if not (message.text or "").strip().isdigit():
+        await _admin_edit_message(message, state, "Введите целое число дней.", reply_markup=admin_back_keyboard())
+        return
+
+    days = int((message.text or "").strip())
+    if days <= 0:
+        await _admin_edit_message(message, state, "Нужно число > 0.", reply_markup=admin_back_keyboard())
+        return
+
+    data = await state.get_data()
+    user_id = int(data.get("transfer_user_id", 0))
+    if not user_id:
+        await state.clear()
+        await _admin_edit_message(message, state, "Сессия истекла.")
+        return
+
+    user_repo = UserRepository(session)
+    sub_repo = SubscriptionRepository(session)
+    user = await user_repo.get_by_tg_id_for_update(user_id)
+    if not user:
+        await state.clear()
+        await _admin_edit_message(message, state, "Пользователь не найден.")
+        return
+
+    sub = await sub_repo.get_active(user_id)
+    if sub:
+        base = sub.expires_at or datetime.now(timezone.utc)
+        sub.expires_at = base + timedelta(days=days)
+        sub.duration_days = (sub.duration_days or 0) + days
+        await sub_repo.save(sub)
+    else:
+        plan_id = await _resolve_plan_id_by_slug(session, TRANSFER_PLAN_SLUG)
+        if not plan_id:
+            await state.clear()
+            await _admin_edit_message(message, state, "Базовый тариф для переноса не найден.")
+            return
+        service = _build_subscription_service(session)
+        await service.purchase_with_balance(
+            user_id=user_id,
+            plan_id=plan_id,
+            final_price=Decimal("0"),
+            period_days=days,
+            plan_type=TRANSFER_PLAN_TYPE,
+            traffic_gb=settings.hiddify_default_traffic_gb,
+            build_preset=TRANSFER_BUILD_PRESET,
+        )
+
+    await state.set_state(None)
+    await state.update_data(transfer_user_id=None)
+    text, has_sub = await _render_user_profile_with_draft(user_id, session, state)
+    await _admin_edit_message(
+        message,
+        state,
+        f"✅ Перенос выполнен: добавлено <b>{days}</b> дн.\n\n{text}",
+        reply_markup=admin_user_manage_keyboard(user_id, has_sub),
+    )
 
 
 @router.callback_query(F.data.startswith("admin:user:apply:"))

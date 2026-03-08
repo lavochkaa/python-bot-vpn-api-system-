@@ -7,6 +7,7 @@ class AdminTicketStates(StatesGroup):
     waiting_user_id = State()
     waiting_balance_amount = State()
     waiting_days_amount = State()
+    waiting_transfer_days = State()
     waiting_promo_code = State()
     waiting_promo_target = State()
     waiting_promo_value = State()
