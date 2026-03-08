@@ -1,11 +1,11 @@
 import logging
 from typing import Callable, Awaitable, Any
 from aiogram import BaseMiddleware
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import TelegramObject, Message, CallbackQuery, Update
 from bot.config import settings
 from bot.repositories.app_setting import AppSettingRepository
 from bot.utils.channel_subscription import check_channel_subscription
+from bot.utils.maintenance import build_maintenance_notice
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +56,7 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
                     default=False,
                 )
                 if maintenance_enabled:
-                    channel_username = settings.normalized_channel_username.lstrip("@")
-                    kb_builder = InlineKeyboardBuilder()
-                    kb_builder.button(text="📢 Канал", url=f"https://t.me/{channel_username}")
-                    kb = kb_builder.as_markup()
-                    text = (
-                        "⚙️ Сейчас идут технические работы.\n"
-                        "Пожалуйста, ожидайте информацию в канале."
-                    )
+                    text, kb = await build_maintenance_notice(session, user_id)
                     if message is not None:
                         await message.answer(text, reply_markup=kb)
                     if callback is not None:

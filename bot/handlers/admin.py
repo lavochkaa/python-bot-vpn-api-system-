@@ -42,6 +42,7 @@ from bot.repositories.user import UserRepository
 from bot.repositories.vpn_key import VpnKeyRepository
 from bot.states.admin import AdminTicketStates
 from bot.services.subscription import SubscriptionService
+from bot.utils.maintenance import build_maintenance_notice, get_all_user_ids
 from bot.utils.messages import edit_or_send, send_or_answer, send_to_chat
 
 router = Router()
@@ -351,8 +352,13 @@ async def admin_maintenance_set(call: CallbackQuery, state: FSMContext, session:
     if not _is_admin(call.from_user.id):
         await call.answer("Нет доступа", show_alert=True)
         return
+    try:
+        await call.answer("Обновляю статус...")
+    except TelegramBadRequest:
+        pass
     mode = call.data.split(":")[-1]
     enabled = mode == "close"
+    was_enabled = await AppSettingRepository(session).get_bool(MAINTENANCE_KEY, default=False)
     await AppSettingRepository(session).set_bool(MAINTENANCE_KEY, enabled)
     await _set_admin_anchor(state, call.message)
     status_text = "🔒 включен" if enabled else "✅ выключен"
@@ -363,7 +369,30 @@ async def admin_maintenance_set(call: CallbackQuery, state: FSMContext, session:
         "Выберите действие:",
         reply_markup=admin_maintenance_keyboard(),
     )
-    await call.answer("Статус обновлен")
+    if enabled and not was_enabled:
+        user_ids = await get_all_user_ids(session)
+        sent_count = 0
+        for user_id in user_ids:
+            if user_id in settings.admin_id_set:
+                continue
+            try:
+                text, kb = await build_maintenance_notice(session, user_id)
+                await call.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    reply_markup=kb,
+                )
+                sent_count += 1
+            except TelegramAPIError:
+                continue
+        await edit_or_send(
+            call.message,
+            "🛠 <b>Режим техработ</b>\n\n"
+            f"Текущий статус: <b>{status_text}</b>\n"
+            f"Оповещение отправлено: <b>{sent_count}</b>\n\n"
+            "Выберите действие:",
+            reply_markup=admin_maintenance_keyboard(),
+        )
 
 
 @router.callback_query(F.data == "admin:broadcast")
