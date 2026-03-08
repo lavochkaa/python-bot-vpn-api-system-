@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message, MessageEntity
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,16 +108,35 @@ def _preview(text: str, limit: int = 120) -> str:
 
 
 def _broadcast_preview_text(text: str | None, has_photo: bool) -> str:
-    body = (text or "").strip()
-    text_block = html.escape(_preview(body, limit=600)) if body else "—"
+    body = text or ""
+    text_preview = body if len(body) <= 1200 else (body[:1200] + "\n…")
+    text_block = html.escape(text_preview) if text_preview else "—"
     photo_block = "да" if has_photo else "нет"
     return (
         "📢 <b>Рассылка</b>\n\n"
         "<b>Предпросмотр:</b>\n"
-        f"Текст: <b>{text_block}</b>\n"
+        f"Текст:\n<pre>{text_block}</pre>\n"
         f"Фото: <b>{photo_block}</b>\n\n"
         "Отправьте новый текст или фото для обновления."
     )
+
+
+def _serialize_entities(entities: list[MessageEntity] | None) -> list[dict]:
+    if not entities:
+        return []
+    return [entity.model_dump() for entity in entities]
+
+
+def _deserialize_entities(raw: list[dict] | None) -> list[MessageEntity]:
+    if not raw:
+        return []
+    entities: list[MessageEntity] = []
+    for item in raw:
+        try:
+            entities.append(MessageEntity(**item))
+        except Exception:
+            continue
+    return entities
 
 
 async def _set_admin_anchor(state: FSMContext, message: Message) -> None:
@@ -319,8 +338,8 @@ async def admin_broadcast_text_input(message: Message, state: FSMContext) -> Non
         await _admin_edit_message(message, state, "Доступ запрещен.")
         return
 
-    text = (message.text or message.caption or "").strip()
-    if not text:
+    text = message.text if message.text is not None else (message.caption or "")
+    if not text.strip():
         await _admin_edit_message(
             message,
             state,
@@ -332,8 +351,13 @@ async def admin_broadcast_text_input(message: Message, state: FSMContext) -> Non
     photo_file_id = None
     if message.photo:
         photo_file_id = message.photo[-1].file_id
+    entities = message.entities if message.text is not None else message.caption_entities
 
-    await state.update_data(broadcast_text=text, broadcast_photo_file_id=photo_file_id or "")
+    await state.update_data(
+        broadcast_text=text,
+        broadcast_entities=_serialize_entities(entities),
+        broadcast_photo_file_id=photo_file_id or "",
+    )
     await state.set_state(AdminTicketStates.waiting_broadcast_media)
     await _admin_edit_message(
         message,
@@ -351,17 +375,20 @@ async def admin_broadcast_media_input(message: Message, state: FSMContext) -> No
         return
 
     data = await state.get_data()
-    current_text = (data.get("broadcast_text") or "").strip()
+    current_text = data.get("broadcast_text") or ""
+    current_entities = data.get("broadcast_entities") or []
     current_photo = data.get("broadcast_photo_file_id") or ""
 
-    incoming_text = (message.text or message.caption or "").strip()
-    if incoming_text:
+    incoming_text = message.text if message.text is not None else (message.caption or "")
+    if incoming_text.strip():
         current_text = incoming_text
+        entities = message.entities if message.text is not None else message.caption_entities
+        current_entities = _serialize_entities(entities)
 
     if message.photo:
         current_photo = message.photo[-1].file_id
 
-    if not incoming_text and not message.photo:
+    if not incoming_text.strip() and not message.photo:
         await _admin_edit_message(
             message,
             state,
@@ -372,6 +399,7 @@ async def admin_broadcast_media_input(message: Message, state: FSMContext) -> No
 
     await state.update_data(
         broadcast_text=current_text,
+        broadcast_entities=current_entities,
         broadcast_photo_file_id=current_photo,
     )
     await _admin_edit_message(
@@ -388,8 +416,8 @@ async def admin_broadcast_clear_photo(call: CallbackQuery, state: FSMContext) ->
         await call.answer("Нет доступа", show_alert=True)
         return
     data = await state.get_data()
-    text = (data.get("broadcast_text") or "").strip()
-    if not text:
+    text = data.get("broadcast_text") or ""
+    if not text.strip():
         await call.answer("Сначала задайте текст", show_alert=True)
         return
     await state.update_data(broadcast_photo_file_id="")
@@ -408,9 +436,10 @@ async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, sessio
         return
 
     data = await state.get_data()
-    text = (data.get("broadcast_text") or "").strip()
+    text = data.get("broadcast_text") or ""
+    entities = _deserialize_entities(data.get("broadcast_entities") or [])
     photo_file_id = (data.get("broadcast_photo_file_id") or "").strip()
-    if not text:
+    if not text.strip():
         await call.answer("Сначала отправьте текст рассылки", show_alert=True)
         return
 
@@ -429,10 +458,16 @@ async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, sessio
                     chat_id=user_id,
                     photo=photo_file_id,
                     caption=text,
+                    caption_entities=entities or None,
                     parse_mode=None,
                 )
             else:
-                await call.bot.send_message(chat_id=user_id, text=text, parse_mode=None)
+                await call.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    entities=entities or None,
+                    parse_mode=None,
+                )
             sent_count += 1
         except TelegramAPIError:
             fail_count += 1
