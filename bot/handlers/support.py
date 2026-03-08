@@ -70,6 +70,15 @@ def _preview(text: str, limit: int = 120) -> str:
     return normalized[:limit] + "..."
 
 
+def _ticket_message_text(text: str, photo_file_id: str | None) -> str:
+    parts: list[str] = []
+    if photo_file_id:
+        parts.append("📷 Фото прикреплено")
+    if text.strip():
+        parts.append(text)
+    return "\n".join(parts) if parts else "📷 Фото прикреплено"
+
+
 def _render_messages(messages) -> str:
     if not messages:
         return "Сообщений пока нет."
@@ -77,7 +86,7 @@ def _render_messages(messages) -> str:
     for item in messages:
         role = "👤 Пользователь" if item.sender_role == TicketSenderRole.user else "🛠 Админ"
         created = item.created_at.strftime("%d.%m %H:%M")
-        lines.append(f"{role} [{created}]\n{item.message_text}")
+        lines.append(f"{role} [{created}]\n{_ticket_message_text(item.message_text, item.photo_file_id)}")
     return "\n\n".join(lines)
 
 
@@ -86,23 +95,33 @@ async def _notify_admins_about_ticket_message(
     ticket_id: int,
     user_id: int,
     text: str,
+    photo_file_id: str | None,
     is_new: bool,
 ) -> None:
     prefix = "🔔 Новый тикет" if is_new else "✍️ Новое сообщение в тикете"
     payload = (
         f"{prefix} #{ticket_id}\n"
         f"Пользователь: <code>{user_id}</code>\n"
-        f"Превью: { _preview(text) }"
+        f"Превью: { _preview(_ticket_message_text(text, photo_file_id)) }"
     )
     for admin_id in settings.admin_id_set:
         try:
-            await send_to_chat_banner(
-                message.bot,
-                admin_id,
-                payload,
-                reply_markup=_admin_ticket_link_keyboard(ticket_id),
-                banner_path=settings.message_banner_support_path,
-            )
+            if photo_file_id:
+                await message.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=photo_file_id,
+                    caption=payload,
+                    parse_mode="HTML",
+                    reply_markup=_admin_ticket_link_keyboard(ticket_id),
+                )
+            else:
+                await send_to_chat_banner(
+                    message.bot,
+                    admin_id,
+                    payload,
+                    reply_markup=_admin_ticket_link_keyboard(ticket_id),
+                    banner_path=settings.message_banner_support_path,
+                )
         except TelegramAPIError:
             continue
 
@@ -124,7 +143,8 @@ async def ask_support_message(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SupportStates.waiting_message)
     await edit_or_send(
         call.message,
-        "✍️ Отправьте текст обращения одним сообщением.",
+        "✍️ Отправьте обращение одним сообщением.\n"
+        "Можно текст, фото или фото с подписью.",
     )
     await call.answer()
 
@@ -191,15 +211,20 @@ async def ticket_reply_start(call: CallbackQuery, state: FSMContext, session: As
         return
     await state.set_state(SupportStates.waiting_reply_message)
     await state.update_data(ticket_id=ticket.id)
-    await edit_or_send(call.message, f"✍️ Введите сообщение для тикета #{ticket.id}:")
+    await edit_or_send(
+        call.message,
+        f"✍️ Отправьте сообщение для тикета #{ticket.id}.\n"
+        "Можно текст, фото или фото с подписью.",
+    )
     await call.answer()
 
 
 @router.message(SupportStates.waiting_reply_message)
 async def ticket_reply_save(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    text = (message.text or "").strip()
-    if not text:
-        await send_or_answer(message, "Отправьте текстовое сообщение.")
+    text = (message.text or message.caption or "").strip()
+    photo_file_id = message.photo[-1].file_id if message.photo else None
+    if not text and not photo_file_id:
+        await send_or_answer(message, "Отправьте текст, фото или фото с подписью.")
         return
     data = await state.get_data()
     ticket_id = data.get("ticket_id")
@@ -217,7 +242,7 @@ async def ticket_reply_save(message: Message, state: FSMContext, session: AsyncS
         await state.clear()
         await send_or_answer(message, "Тикет закрыт.")
         return
-    await repo.add_message(ticket, TicketSenderRole.user, text)
+    await repo.add_message(ticket, TicketSenderRole.user, text, photo_file_id=photo_file_id)
     await send_or_answer(
         message,
         f"Сообщение по тикету #{ticket.id} отправлено.",
@@ -228,6 +253,7 @@ async def ticket_reply_save(message: Message, state: FSMContext, session: AsyncS
         ticket_id=ticket.id,
         user_id=message.from_user.id,
         text=text,
+        photo_file_id=photo_file_id,
         is_new=False,
     )
     await state.clear()
@@ -262,12 +288,13 @@ async def ticket_close(call: CallbackQuery, session: AsyncSession) -> None:
 
 @router.message(SupportStates.waiting_message)
 async def create_ticket(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    text = (message.text or "").strip()
-    if not text:
-        await send_or_answer(message, "Отправьте текст обращения.")
+    text = (message.text or message.caption or "").strip()
+    photo_file_id = message.photo[-1].file_id if message.photo else None
+    if not text and not photo_file_id:
+        await send_or_answer(message, "Отправьте текст, фото или фото с подписью.")
         return
     service = SupportService(SupportRepository(session))
-    ticket = await service.create_ticket(message.from_user.id, text)
+    ticket = await service.create_ticket(message.from_user.id, text, photo_file_id=photo_file_id)
     await send_or_answer_banner(
         message,
         f"✅ Обращение создано.\n"
@@ -280,6 +307,7 @@ async def create_ticket(message: Message, state: FSMContext, session: AsyncSessi
         ticket_id=ticket.id,
         user_id=message.from_user.id,
         text=text,
+        photo_file_id=photo_file_id,
         is_new=True,
     )
     await state.clear()

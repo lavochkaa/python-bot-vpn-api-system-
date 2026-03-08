@@ -54,7 +54,13 @@ class SupportRepository(BaseRepository[SupportTicket]):
         )
         return result.scalar_one_or_none()
 
-    async def create_ticket(self, user_id: int, text: str, subject: str | None = None) -> SupportTicket:
+    async def create_ticket(
+        self,
+        user_id: int,
+        text: str,
+        subject: str | None = None,
+        photo_file_id: str | None = None,
+    ) -> SupportTicket:
         now = datetime.now(timezone.utc)
         ticket = SupportTicket(
             user_id=user_id,
@@ -69,6 +75,7 @@ class SupportRepository(BaseRepository[SupportTicket]):
             ticket_id=ticket.id,
             sender_role=TicketSenderRole.user,
             message_text=text,
+            photo_file_id=photo_file_id,
         )
         self.session.add(message)
         await self.session.commit()
@@ -80,12 +87,14 @@ class SupportRepository(BaseRepository[SupportTicket]):
         ticket: SupportTicket,
         sender_role: TicketSenderRole,
         message_text: str,
+        photo_file_id: str | None = None,
     ) -> TicketMessage:
         now = datetime.now(timezone.utc)
         message = TicketMessage(
             ticket_id=ticket.id,
             sender_role=sender_role,
             message_text=message_text,
+            photo_file_id=photo_file_id,
         )
         ticket.text = message_text
         if sender_role == TicketSenderRole.user:

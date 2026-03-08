@@ -203,6 +203,7 @@ class TicketMessage(Base):
     ticket_id: Mapped[int] = mapped_column(ForeignKey("support_tickets.id"))
     sender_role: Mapped[TicketSenderRole] = mapped_column(PgEnum(TicketSenderRole, name="ticketsenderrole"))
     message_text: Mapped[str] = mapped_column(Text)
+    photo_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     ticket: Mapped["SupportTicket"] = relationship(back_populates="messages")

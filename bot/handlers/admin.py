@@ -106,7 +106,12 @@ def _render_ticket_messages(messages) -> str:
     for item in messages:
         role = "👤 User" if item.sender_role == TicketSenderRole.user else "🛠 Admin"
         created = item.created_at.strftime("%d.%m %H:%M")
-        lines.append(f"{role} [{created}]\n{item.message_text}")
+        parts: list[str] = []
+        if item.photo_file_id:
+            parts.append("📷 Фото прикреплено")
+        if item.message_text.strip():
+            parts.append(item.message_text)
+        lines.append(f"{role} [{created}]\n" + ("\n".join(parts) if parts else "📷 Фото прикреплено"))
     return "\n\n".join(lines)
 
 
@@ -143,7 +148,7 @@ def _broadcast_preview_payload(
     entities: list[MessageEntity] | None,
     has_photo: bool,
 ) -> tuple[str, list[MessageEntity]]:
-    body = text or ""
+    body = text if text else "—"
     photo_block = "да" if has_photo else "нет"
     prefix = "📢 Рассылка\n\nПредпросмотр:\n"
     suffix = f"\n\nФото: {photo_block}\n\nОтправьте новый текст или фото для обновления."
@@ -406,8 +411,8 @@ async def admin_broadcast_start(call: CallbackQuery, state: FSMContext) -> None:
     await edit_or_send(
         call.message,
         "📢 <b>Рассылка</b>\n\n"
-        "Отправьте текст рассылки.\n"
-        "После этого можно добавить фото (опционально) и нажать «Опубликовать».",
+        "Отправьте текст или фото для рассылки.\n"
+        "Потом можно дополнить вторым сообщением и нажать «Опубликовать».",
         reply_markup=admin_back_keyboard(),
     )
     await call.answer()
@@ -421,18 +426,16 @@ async def admin_broadcast_text_input(message: Message, state: FSMContext) -> Non
         return
 
     text = message.text if message.text is not None else (message.caption or "")
-    if not text.strip():
+    photo_file_id = message.photo[-1].file_id if message.photo else None
+    if not text.strip() and not photo_file_id:
         await _admin_edit_message(
             message,
             state,
-            "Нужен текст рассылки. Отправьте текст сообщением или подписью к фото.",
+            "Нужен текст и/или фото для рассылки.",
             reply_markup=admin_back_keyboard(),
         )
         return
 
-    photo_file_id = None
-    if message.photo:
-        photo_file_id = message.photo[-1].file_id
     entities = message.entities if message.text is not None else message.caption_entities
 
     await state.update_data(
@@ -540,8 +543,8 @@ async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, sessio
     text = data.get("broadcast_text") or ""
     entities = _deserialize_entities(data.get("broadcast_entities") or [])
     photo_file_id = (data.get("broadcast_photo_file_id") or "").strip()
-    if not text.strip():
-        await call.answer("Сначала отправьте текст рассылки", show_alert=True)
+    if not text.strip() and not photo_file_id:
+        await call.answer("Сначала отправьте текст и/или фото рассылки", show_alert=True)
         return
 
     await edit_or_send(call.message, "⏳ Публикую рассылку...")
@@ -555,13 +558,15 @@ async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, sessio
     for user_id in user_ids:
         try:
             if photo_file_id:
-                await call.bot.send_photo(
-                    chat_id=user_id,
-                    photo=photo_file_id,
-                    caption=text,
-                    caption_entities=entities or None,
-                    parse_mode=None,
-                )
+                kwargs = {
+                    "chat_id": user_id,
+                    "photo": photo_file_id,
+                }
+                if text.strip():
+                    kwargs["caption"] = text
+                    kwargs["caption_entities"] = entities or None
+                    kwargs["parse_mode"] = None
+                await call.bot.send_photo(**kwargs)
             else:
                 await call.bot.send_message(
                     chat_id=user_id,
@@ -1309,15 +1314,51 @@ async def admin_user_transfer_days_input(message: Message, state: FSMContext, se
             await _admin_edit_message(message, state, "Базовый тариф для переноса не найден.")
             return
         service = _build_subscription_service(session)
-        await service.purchase_with_balance(
-            user_id=user_id,
-            plan_id=plan_id,
-            final_price=Decimal("0"),
-            period_days=days,
-            plan_type=TRANSFER_PLAN_TYPE,
-            traffic_gb=settings.hiddify_default_traffic_gb,
-            build_preset=TRANSFER_BUILD_PRESET,
-        )
+        existing_keys = await VpnKeyRepository(session).get_user_keys(user_id, limit=1)
+        try:
+            if existing_keys:
+                await service.activate(
+                    user_id=user_id,
+                    plan_id=plan_id,
+                    period_days=days,
+                    plan_type=TRANSFER_PLAN_TYPE,
+                    traffic_gb=settings.hiddify_default_traffic_gb,
+                    build_preset=TRANSFER_BUILD_PRESET,
+                    final_price=Decimal("0"),
+                    preissued_key=existing_keys[0].key,
+                )
+                await session.commit()
+            else:
+                await service.purchase_with_balance(
+                    user_id=user_id,
+                    plan_id=plan_id,
+                    final_price=Decimal("0"),
+                    period_days=days,
+                    plan_type=TRANSFER_PLAN_TYPE,
+                    traffic_gb=settings.hiddify_default_traffic_gb,
+                    build_preset=TRANSFER_BUILD_PRESET,
+                )
+        except ValueError as exc:
+            await session.rollback()
+            await state.clear()
+            await _admin_edit_message(
+                message,
+                state,
+                "Не удалось выполнить перенос.\n"
+                f"Причина: <b>{html.escape(str(exc))}</b>",
+                reply_markup=admin_user_manage_keyboard(user_id, False),
+            )
+            return
+        except Exception:
+            await session.rollback()
+            await state.clear()
+            await _admin_edit_message(
+                message,
+                state,
+                "Не удалось выполнить перенос из-за внутренней ошибки.",
+                reply_markup=admin_user_manage_keyboard(user_id, False),
+            )
+            return
 
     await state.set_state(None)
     await state.update_data(transfer_user_id=None)
@@ -1524,7 +1565,8 @@ async def admin_reply_start(call: CallbackQuery, state: FSMContext, session: Asy
     await state.update_data(ticket_id=ticket_id, user_id=ticket.user_id)
     await edit_or_send(
         call.message,
-        f"Введите ответ по тикету #{ticket_id} (user <code>{ticket.user_id}</code>):",
+        f"Отправьте ответ по тикету #{ticket_id} (user <code>{ticket.user_id}</code>).\n"
+        "Можно текст, фото или фото с подписью.",
         reply_markup=admin_back_keyboard(),
     )
     await call.answer()
@@ -1536,9 +1578,15 @@ async def admin_reply_send(message: Message, state: FSMContext, session: AsyncSe
         await state.clear()
         await _admin_edit_message(message, state, "Доступ запрещен.")
         return
-    text = (message.text or "").strip()
-    if not text:
-        await _admin_edit_message(message, state, "Отправьте текст ответа.", reply_markup=admin_back_keyboard())
+    text = (message.text or message.caption or "").strip()
+    photo_file_id = message.photo[-1].file_id if message.photo else None
+    if not text and not photo_file_id:
+        await _admin_edit_message(
+            message,
+            state,
+            "Отправьте текст, фото или фото с подписью.",
+            reply_markup=admin_back_keyboard(),
+        )
         return
     data = await state.get_data()
     ticket_id = data.get("ticket_id")
@@ -1557,17 +1605,28 @@ async def admin_reply_send(message: Message, state: FSMContext, session: AsyncSe
         await state.clear()
         await _admin_edit_message(message, state, "Тикет закрыт.")
         return
-    await repo.add_message(ticket, TicketSenderRole.admin, text)
+    await repo.add_message(ticket, TicketSenderRole.admin, text, photo_file_id=photo_file_id)
     if ticket.status == TicketStatus.pending:
         ticket.status = TicketStatus.open
         await repo.save(ticket)
     try:
-        await send_to_chat(
-            message.bot,
-            int(user_id),
-            f"💬 Ответ поддержки по тикету #{ticket.id}:\n\n{text}",
-            reply_markup=_user_ticket_link_keyboard(ticket.id),
-        )
+        if photo_file_id:
+            caption = f"💬 Ответ поддержки по тикету #{ticket.id}"
+            if text.strip():
+                caption += f":\n\n{text}"
+            await message.bot.send_photo(
+                chat_id=int(user_id),
+                photo=photo_file_id,
+                caption=caption,
+                reply_markup=_user_ticket_link_keyboard(ticket.id),
+            )
+        else:
+            await send_to_chat(
+                message.bot,
+                int(user_id),
+                f"💬 Ответ поддержки по тикету #{ticket.id}:\n\n{text}",
+                reply_markup=_user_ticket_link_keyboard(ticket.id),
+            )
     except TelegramAPIError:
         await _admin_edit_message(message, state, "Не удалось отправить ответ пользователю.")
         await state.clear()
@@ -1575,7 +1634,8 @@ async def admin_reply_send(message: Message, state: FSMContext, session: AsyncSe
     await _admin_edit_message(
         message,
         state,
-        f"Ответ по тикету #{ticket.id} отправлен.\nПревью: {_preview(text)}",
+        f"Ответ по тикету #{ticket.id} отправлен.\n"
+        f"Превью: {_preview(('📷 Фото ' if photo_file_id else '') + text)}",
         reply_markup=admin_ticket_actions_keyboard(ticket.id, is_open=True),
     )
     await state.clear()
