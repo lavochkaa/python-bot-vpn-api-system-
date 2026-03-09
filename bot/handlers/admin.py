@@ -50,7 +50,8 @@ PROMO_PAGE_SIZE = 10
 MAINTENANCE_KEY = "maintenance_mode"
 TRANSFER_PLAN_SLUG = "vpn"
 TRANSFER_PLAN_TYPE = "pc"
-TRANSFER_BUILD_PRESET = "max"
+TRANSFER_BUILD_PRESET = None
+TRANSFER_TRAFFIC_GB = 50
 
 
 def _is_admin(user_id: int) -> bool:
@@ -1306,6 +1307,7 @@ async def admin_user_transfer_days_input(message: Message, state: FSMContext, se
         base = sub.expires_at or datetime.now(timezone.utc)
         sub.expires_at = base + timedelta(days=days)
         sub.duration_days = (sub.duration_days or 0) + days
+        sub.traffic_gb = TRANSFER_TRAFFIC_GB
         await sub_repo.save(sub)
     else:
         plan_id = await _resolve_plan_id_by_slug(session, TRANSFER_PLAN_SLUG)
@@ -1322,7 +1324,7 @@ async def admin_user_transfer_days_input(message: Message, state: FSMContext, se
                     plan_id=plan_id,
                     period_days=days,
                     plan_type=TRANSFER_PLAN_TYPE,
-                    traffic_gb=settings.hiddify_default_traffic_gb,
+                    traffic_gb=TRANSFER_TRAFFIC_GB,
                     build_preset=TRANSFER_BUILD_PRESET,
                     final_price=Decimal("0"),
                     preissued_key=existing_keys[0].key,
@@ -1335,7 +1337,7 @@ async def admin_user_transfer_days_input(message: Message, state: FSMContext, se
                     final_price=Decimal("0"),
                     period_days=days,
                     plan_type=TRANSFER_PLAN_TYPE,
-                    traffic_gb=settings.hiddify_default_traffic_gb,
+                    traffic_gb=TRANSFER_TRAFFIC_GB,
                     build_preset=TRANSFER_BUILD_PRESET,
                 )
         except ValueError as exc:

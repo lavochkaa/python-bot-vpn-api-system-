@@ -290,122 +290,21 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
         duration_days: int | None,
         build_preset: str | None = None,
     ) -> list[Any]:
-        profile_name = settings.hiddify_profile_name or "CRYSTAL VPN"
-        traffic = traffic_gb or settings.hiddify_default_traffic_gb
-        days = duration_days or settings.hiddify_default_duration_days
-        now_iso = datetime.now(timezone.utc).isoformat()
+        _ = build_preset
+        profile_name = (settings.hiddify_profile_name or "CRYSTAL VPN").strip() or "CRYSTAL VPN"
+        traffic = int(traffic_gb if traffic_gb is not None else 50)
+        days = int(duration_days if duration_days is not None else settings.hiddify_default_duration_days)
         reset_mode = (settings.hiddify_usage_reset_mode or "monthly").strip().lower()
+        mode = "monthly" if reset_mode == "monthly" else "no_reset"
 
-        username = f"user_{user_id}"
-        base = {"name": f"{profile_name}"}
-        core_variants: list[dict[str, Any]] = [
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "package_days": int(days),
-            },
-            {
-                **base,
-                "usage_limit_gb": int(traffic),
-                "package_days": int(days),
-            },
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "days": int(days),
-            },
-            {
-                **base,
-                "traffic": int(traffic),
-                "package_days": int(days),
-            },
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "package_days": int(days),
-                "username": username,
-            },
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "package_days": int(days),
-                "comment": f"tg:{user_id}; plan:{plan_slug}",
-            },
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "package_days": int(days),
-                "mode": "monthly" if reset_mode == "monthly" else "no_reset",
-            },
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "package_days": int(days),
-                "reset_mode": "monthly" if reset_mode == "monthly" else "none",
-            },
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "package_days": int(days),
-                "usage_reset_strategy": "monthly" if reset_mode == "monthly" else "no_reset",
-            },
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "package_days": int(days),
-                "reset_usage_period": "month" if reset_mode == "monthly" else "never",
-            },
-            {
-                **base,
-                "usage_limit_GB": int(traffic),
-                "package_days": int(days),
-                "start_date": now_iso,
-            },
-        ]
-        variants: list[Any] = []
-        inbound_names = [f"обход {idx}" for idx in range(1, 9)]
-        preset = (build_preset or "max").strip().lower()
-        full_flags: dict[str, Any] = {
-            "build_preset": preset,
-            "preset": preset,
-            "profile_preset": preset,
-            "config_mode": "full" if preset == "max" else preset,
+        payload = {
+            "name": profile_name,
+            "comment": f"tg:{user_id}; plan:{plan_slug}",
+            "usage_limit_GB": traffic,
+            "package_days": days,
+            "mode": mode,
         }
-        reset_candidates: list[dict[str, Any]] = []
-        if reset_mode == "monthly":
-            reset_candidates = [
-                {"mode": "monthly"},
-                {"reset_mode": "monthly"},
-                {"usage_reset_strategy": "monthly"},
-                {"reset_usage_period": "month"},
-            ]
-        for item in core_variants:
-            # Prioritize payloads with monthly reset fields first; API loop stops on first success.
-            prioritized_items: list[dict[str, Any]] = []
-            for reset_fields in reset_candidates:
-                prioritized_items.append({**item, **reset_fields, **full_flags})
-                prioritized_items.append({**item, **reset_fields})
-            prioritized_items.append({**item, **full_flags})
-            prioritized_items.append(item)
-            for payload_item in prioritized_items:
-                variants.append(payload_item)
-                variants.append({"user": payload_item})
-                variants.append({"users": [payload_item]})
-                variants.append([payload_item])  # type: ignore[list-item]
-
-            for enriched in self._build_inbounds_payload_variants(item, inbound_names):
-                variants.append(enriched)
-                variants.append({"user": enriched})
-                variants.append({"users": [enriched]})
-                variants.append([enriched])  # type: ignore[list-item]
-        # Remove None values defensively.
-        clean_variants: list[Any] = []
-        for item in variants:
-            if isinstance(item, dict):
-                clean_variants.append({k: v for k, v in item.items() if v is not None})
-            else:
-                clean_variants.append(item)
-        return clean_variants
+        return [payload]
 
     def _build_inbounds_payload_variants(self, base: dict[str, Any], names: list[str]) -> list[dict[str, Any]]:
         return [
