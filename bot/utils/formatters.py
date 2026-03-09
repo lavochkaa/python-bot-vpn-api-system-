@@ -74,7 +74,7 @@ async def format_subscription_for_user(
     if usage_info:
         used_gb = usage_info.get("current_usage_gb")
         provider_total = usage_info.get("usage_limit_gb")
-        if provider_total is not None:
+        if total_gb is None and provider_total is not None:
             total_gb = float(provider_total)
     if total_gb is not None and used_gb is not None:
         remaining_gb = max(total_gb - float(used_gb), 0.0)

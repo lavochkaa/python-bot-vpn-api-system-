@@ -245,21 +245,23 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
         for item in payload:
             if not isinstance(item, dict):
                 continue
-            hay = {
-                str(item.get("id", "")),
-                str(item.get("uuid", "")),
-                str(item.get("telegram_id", "")),
-                str(item.get("user_id", "")),
-                str(item.get("username", "")),
-                str(item.get("name", "")),
-                str(item.get("comment", "")),
+            exact_hay = {
+                str(item.get("id", "")).strip(),
+                str(item.get("uuid", "")).strip(),
+                str(item.get("telegram_id", "")).strip(),
+                str(item.get("user_id", "")).strip(),
+                str(item.get("username", "")).strip(),
             }
-            if any(ref and any(ref in h for h in hay) for ref in ref_values):
+            comment = str(item.get("comment", "")).strip()
+            if any(ref and ref in exact_hay for ref in ref_values):
+                return item
+            if any(ref and comment and (comment == ref or f"tg:{ref}" in comment) for ref in ref_values):
                 return item
 
-        for item in payload:
-            if isinstance(item, dict) and ("current_usage_GB" in item or "usage_limit_GB" in item):
-                return item
+        if len(payload) == 1 and isinstance(payload[0], dict) and (
+            "current_usage_GB" in payload[0] or "usage_limit_GB" in payload[0]
+        ):
+            return payload[0]
         return None
 
     def _to_float(self, value: Any) -> float | None:
