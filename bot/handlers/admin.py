@@ -407,8 +407,8 @@ async def admin_sync_active_inbounds(call: CallbackQuery, state: FSMContext, ses
     success_ids: list[int] = []
     failures: list[tuple[int, str]] = []
     seen_user_ids: set[int] = set()
-    for sub in subs:
-        user_id = int(sub.user_id)
+    pending_user_ids = [int(sub.user_id) for sub in subs]
+    for user_id in pending_user_ids:
         if user_id in seen_user_ids:
             continue
         seen_user_ids.add(user_id)
