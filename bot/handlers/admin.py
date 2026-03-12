@@ -417,6 +417,8 @@ async def admin_sync_active_inbounds(call: CallbackQuery, state: FSMContext, ses
             success_ids.append(user_id)
         except ValueError as exc:
             failures.append((user_id, str(exc)))
+        except Exception as exc:
+            failures.append((user_id, str(exc)))
 
     await edit_or_send(
         call.message,

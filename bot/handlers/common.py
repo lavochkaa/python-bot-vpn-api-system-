@@ -1,5 +1,6 @@
 from aiogram import Router
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,7 +55,8 @@ async def _maybe_send_subscription_warning(target: Message, *, remaining_gb: flo
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, session: AsyncSession) -> None:
+async def cmd_start(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    await state.clear()
     is_member, reason = await check_channel_subscription(message.bot, message.from_user.id)
 
     if not is_member:
@@ -83,18 +85,26 @@ async def cmd_start(message: Message, session: AsyncSession) -> None:
         username=message.from_user.username,
         full_name=message.from_user.full_name,
     )
-    snapshot = await build_main_menu_snapshot(user, session)
-    await send_or_answer_banner(
-        message,
-        snapshot.text,
-        reply_markup=main_menu_keyboard(),
-        banner_path=settings.message_banner_main_path,
-    )
-    await _maybe_send_subscription_warning(
-        message,
-        remaining_gb=snapshot.remaining_gb,
-        remaining_days=snapshot.remaining_days,
-    )
+    try:
+        snapshot = await build_main_menu_snapshot(user, session)
+        await send_or_answer_banner(
+            message,
+            snapshot.text,
+            reply_markup=main_menu_keyboard(),
+            banner_path=settings.message_banner_main_path,
+        )
+        await _maybe_send_subscription_warning(
+            message,
+            remaining_gb=snapshot.remaining_gb,
+            remaining_days=snapshot.remaining_days,
+        )
+    except Exception:
+        await send_or_answer_banner(
+            message,
+            "👋 Бот активен.\n\nОткройте главное меню:",
+            reply_markup=main_menu_keyboard(),
+            banner_path=settings.message_banner_main_path,
+        )
 
 
 @router.callback_query(lambda c: c.data == "check:subscription")

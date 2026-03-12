@@ -66,6 +66,11 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
             if message is not None and message.successful_payment:
                 return await handler(event, data)
 
+            # Let /start reach its dedicated handler, which already knows
+            # how to show the subscription gate and the main menu safely.
+            if message is not None and (message.text or "").strip().startswith("/start"):
+                return await handler(event, data)
+
             # Allow the "check subscription" callback to pass through
             if callback is not None and callback.data == "check:subscription":
                 return await handler(event, data)
