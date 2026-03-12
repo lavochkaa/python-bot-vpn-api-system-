@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,18 +18,27 @@ async def format_main_menu(user: User, session: AsyncSession) -> str:
     return snapshot.text
 
 
-async def build_main_menu_snapshot(user: User, session: AsyncSession) -> MainMenuSnapshot:
+async def build_main_menu_snapshot(
+    user: User,
+    session: AsyncSession,
+    *,
+    include_live_usage: bool = True,
+    usage_timeout_seconds: float = 2.0,
+) -> MainMenuSnapshot:
     from bot.repositories.subscription import SubscriptionRepository
 
     sub = await SubscriptionRepository(session).get_active(user.id)
     usage_info: dict | None = None
-    if sub:
+    if sub and include_live_usage:
         provider = build_vpn_provider()
         try:
-            usage_info = await provider.get_user_usage(
-                user_id=user.id,
-                subscription_uuid=user.subscription_uuid,
-                provider_subscription_id=sub.provider_subscription_id,
+            usage_info = await asyncio.wait_for(
+                provider.get_user_usage(
+                    user_id=user.id,
+                    subscription_uuid=user.subscription_uuid,
+                    provider_subscription_id=sub.provider_subscription_id,
+                ),
+                timeout=usage_timeout_seconds,
             )
         except Exception:
             usage_info = None
