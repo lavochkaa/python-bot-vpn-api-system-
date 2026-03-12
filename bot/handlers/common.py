@@ -1,6 +1,6 @@
 import logging
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
@@ -57,8 +57,8 @@ async def _maybe_send_subscription_warning(target: Message, *, remaining_gb: flo
     )
 
 
-@router.message(CommandStart())
-async def cmd_start(message: Message, session: AsyncSession, state: FSMContext) -> None:
+async def _handle_start(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    logger.info("Handling /start for user_id=%s text=%r", message.from_user.id, message.text)
     await state.clear()
     try:
         is_member, reason = await check_channel_subscription(message.bot, message.from_user.id)
@@ -113,6 +113,16 @@ async def cmd_start(message: Message, session: AsyncSession, state: FSMContext) 
             banner_path=settings.message_banner_main_path,
         )
         logger.exception("Failed to render /start menu for user_id=%s", message.from_user.id)
+
+
+@router.message(CommandStart())
+async def cmd_start(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    await _handle_start(message, session, state)
+
+
+@router.message(F.text.regexp(r"^/start(?:@[A-Za-z0-9_]+)?(?:\s+.*)?$"))
+async def cmd_start_fallback(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    await _handle_start(message, session, state)
 
 
 @router.callback_query(lambda c: c.data == "check:subscription")
