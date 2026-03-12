@@ -408,14 +408,15 @@ async def admin_sync_active_inbounds(call: CallbackQuery, state: FSMContext, ses
     failures: list[tuple[int, str]] = []
     seen_user_ids: set[int] = set()
     for sub in subs:
-        if sub.user_id in seen_user_ids:
+        user_id = int(sub.user_id)
+        if user_id in seen_user_ids:
             continue
-        seen_user_ids.add(sub.user_id)
+        seen_user_ids.add(user_id)
         try:
-            await service.sync_existing_active_subscription(sub.user_id)
-            success_ids.append(sub.user_id)
+            await service.sync_existing_active_subscription(user_id)
+            success_ids.append(user_id)
         except ValueError as exc:
-            failures.append((sub.user_id, str(exc)))
+            failures.append((user_id, str(exc)))
 
     await edit_or_send(
         call.message,
