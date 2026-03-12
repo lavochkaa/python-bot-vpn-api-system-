@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -17,6 +19,7 @@ from bot.utils.formatters import build_main_menu_snapshot
 from bot.utils.messages import edit_or_send_banner, send_or_answer_banner
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 async def _safe_edit_text(call: CallbackQuery, text: str, reply_markup) -> None:
@@ -57,7 +60,11 @@ async def _maybe_send_subscription_warning(target: Message, *, remaining_gb: flo
 @router.message(CommandStart())
 async def cmd_start(message: Message, session: AsyncSession, state: FSMContext) -> None:
     await state.clear()
-    is_member, reason = await check_channel_subscription(message.bot, message.from_user.id)
+    try:
+        is_member, reason = await check_channel_subscription(message.bot, message.from_user.id)
+    except Exception:
+        logger.exception("Unexpected failure during /start subscription check for user_id=%s", message.from_user.id)
+        is_member, reason = True, None
 
     if not is_member:
         details = ""
@@ -105,12 +112,17 @@ async def cmd_start(message: Message, session: AsyncSession, state: FSMContext) 
             reply_markup=main_menu_keyboard(),
             banner_path=settings.message_banner_main_path,
         )
+        logger.exception("Failed to render /start menu for user_id=%s", message.from_user.id)
 
 
 @router.callback_query(lambda c: c.data == "check:subscription")
 async def check_subscription_callback(call: CallbackQuery, session: AsyncSession) -> None:
     """Re-entry point after user subscribes to channel."""
-    is_member, reason = await check_channel_subscription(call.bot, call.from_user.id)
+    try:
+        is_member, reason = await check_channel_subscription(call.bot, call.from_user.id)
+    except Exception:
+        logger.exception("Unexpected failure during subscription re-check for user_id=%s", call.from_user.id)
+        is_member, reason = True, None
 
     if not is_member:
         details = ""
@@ -133,15 +145,20 @@ async def check_subscription_callback(call: CallbackQuery, session: AsyncSession
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
-    snapshot = await build_main_menu_snapshot(user, session)
-    await _safe_edit_text(call, snapshot.text, main_menu_keyboard())
-    if call.message:
-        await _maybe_send_subscription_warning(
-            call.message,
-            remaining_gb=snapshot.remaining_gb,
-            remaining_days=snapshot.remaining_days,
-        )
-    await call.answer("✅ Подписка подтверждена!")
+    try:
+        snapshot = await build_main_menu_snapshot(user, session)
+        await _safe_edit_text(call, snapshot.text, main_menu_keyboard())
+        if call.message:
+            await _maybe_send_subscription_warning(
+                call.message,
+                remaining_gb=snapshot.remaining_gb,
+                remaining_days=snapshot.remaining_days,
+            )
+        await call.answer("✅ Подписка подтверждена!")
+    except Exception:
+        logger.exception("Failed to render menu after subscription re-check for user_id=%s", call.from_user.id)
+        await _safe_edit_text(call, "👋 Бот активен.\n\nОткройте главное меню:", main_menu_keyboard())
+        await call.answer("✅ Проверка выполнена")
 
 
 @router.callback_query(lambda c: c.data == "menu:main")
@@ -152,12 +169,16 @@ async def back_to_menu(call: CallbackQuery, session: AsyncSession) -> None:
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
-    snapshot = await build_main_menu_snapshot(user, session)
-    await _safe_edit_text(call, snapshot.text, main_menu_keyboard())
-    if call.message:
-        await _maybe_send_subscription_warning(
-            call.message,
-            remaining_gb=snapshot.remaining_gb,
-            remaining_days=snapshot.remaining_days,
-        )
+    try:
+        snapshot = await build_main_menu_snapshot(user, session)
+        await _safe_edit_text(call, snapshot.text, main_menu_keyboard())
+        if call.message:
+            await _maybe_send_subscription_warning(
+                call.message,
+                remaining_gb=snapshot.remaining_gb,
+                remaining_days=snapshot.remaining_days,
+            )
+    except Exception:
+        logger.exception("Failed to render main menu for user_id=%s", call.from_user.id)
+        await _safe_edit_text(call, "👋 Бот активен.\n\nОткройте главное меню:", main_menu_keyboard())
     await call.answer()
