@@ -240,3 +240,86 @@ class SubscriptionService:
         self.key_repo.session.add(vpn_key)
 
         return sub
+
+    async def sync_existing_active_subscription(self, user_id: int) -> Subscription:
+        session = self.user_repo.session
+        try:
+            user = await self.user_repo.get_by_tg_id_for_update(user_id)
+            if not user:
+                raise ValueError("Пользователь не найден.")
+
+            sub = await self.sub_repo.get_active(user_id)
+            if not sub or not sub.is_active:
+                raise ValueError("Активная подписка не найдена.")
+
+            now = datetime.now(timezone.utc)
+            if sub.expires_at and sub.expires_at <= now:
+                raise ValueError("Подписка уже истекла.")
+
+            plan = sub.plan or await self.plan_repo.get(sub.plan_id)
+            if not plan:
+                raise ValueError("Тариф не найден.")
+
+            if sub.expires_at:
+                remaining_seconds = max(0, int((sub.expires_at - now).total_seconds()))
+                remaining_days = max(1, (remaining_seconds + 86399) // 86400)
+            else:
+                remaining_days = max(1, int(sub.duration_days or plan.period_days or 30))
+
+            key_data = await self.vpn_provider.issue_key(
+                user_id=user_id,
+                plan_slug=plan.slug,
+                traffic_gb=sub.traffic_gb,
+                duration_days=remaining_days,
+                build_preset=sub.build_preset,
+            )
+
+            provider_sub_id = str(
+                key_data.meta.get("subscription_id")
+                or key_data.meta.get("id")
+                or key_data.meta.get("uuid")
+                or ""
+            ) or None
+            payload_json = json.dumps(key_data.meta, ensure_ascii=False) if key_data.meta else None
+            subscription_uuid = _uuid_from_meta(key_data.meta) or _uuid_from_key(key_data.key)
+            if subscription_uuid:
+                owner = await self.user_repo.get_by_subscription_uuid(subscription_uuid)
+                if owner is None or owner.id == user.id:
+                    user.subscription_uuid = subscription_uuid
+                else:
+                    logger.warning(
+                        "Skip assigning duplicate subscription_uuid=%s to user_id=%s (already owned by user_id=%s)",
+                        subscription_uuid,
+                        user.id,
+                        owner.id,
+                    )
+
+            sub.provider_subscription_id = provider_sub_id
+            sub.payload_json = payload_json
+
+            existing_keys = await self.key_repo.get_user_keys(user_id, limit=1)
+            if existing_keys:
+                vpn_key = existing_keys[0]
+                vpn_key.key = key_data.key
+                vpn_key.plan_id = sub.plan_id
+                vpn_key.subscription_id = sub.id
+            else:
+                vpn_key = VpnKey(
+                    user_id=user_id,
+                    key=key_data.key,
+                    plan_id=sub.plan_id,
+                    subscription_id=sub.id,
+                )
+            session.add(user)
+            session.add(sub)
+            session.add(vpn_key)
+            await session.commit()
+            await session.refresh(sub)
+            return sub
+        except ValueError:
+            await session.rollback()
+            raise
+        except Exception as exc:
+            await session.rollback()
+            logger.exception("Active subscription sync failed for user_id=%s", user_id)
+            raise ValueError("Не удалось синхронизировать подписку с новой панелью.") from exc

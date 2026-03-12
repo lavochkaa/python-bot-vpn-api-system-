@@ -140,6 +140,29 @@ def _build_subscription_service(session: AsyncSession) -> SubscriptionService:
     )
 
 
+def _format_sync_summary(total: int, success_ids: list[int], failures: list[tuple[int, str]]) -> str:
+    lines = [
+        "🔄 <b>Синхронизация активных инбаундов</b>",
+        "",
+        f"Всего активных подписок: <b>{total}</b>",
+        f"Успешно синхронизировано: <b>{len(success_ids)}</b>",
+        f"Ошибок: <b>{len(failures)}</b>",
+    ]
+    if success_ids:
+        preview = ", ".join(str(item) for item in success_ids[:15])
+        lines.extend(["", f"Успешные user_id: <code>{preview}</code>"])
+        if len(success_ids) > 15:
+            lines.append(f"И еще: <b>{len(success_ids) - 15}</b>")
+    if failures:
+        lines.append("")
+        lines.append("<b>Ошибки:</b>")
+        for user_id, reason in failures[:10]:
+            lines.append(f"• <code>{user_id}</code>: {html.escape(reason)}")
+        if len(failures) > 10:
+            lines.append(f"И еще ошибок: <b>{len(failures) - 10}</b>")
+    return "\n".join(lines)
+
+
 def _utf16_len(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
@@ -351,6 +374,54 @@ async def admin_maintenance(call: CallbackQuery, state: FSMContext, session: Asy
         reply_markup=admin_maintenance_keyboard(),
     )
     await call.answer()
+
+
+@router.callback_query(F.data == "admin:sync_active_inbounds")
+async def admin_sync_active_inbounds(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    await _set_admin_anchor(state, call.message)
+    try:
+        await call.answer("Синхронизация запущена...")
+    except TelegramBadRequest:
+        pass
+
+    await edit_or_send(
+        call.message,
+        "🔄 <b>Синхронизация активных инбаундов</b>\n\nИщу активные подписки и переношу их в новую панель...",
+        reply_markup=admin_back_keyboard(),
+    )
+
+    sub_repo = SubscriptionRepository(session)
+    subs = await sub_repo.get_all_current_active()
+    if not subs:
+        await edit_or_send(
+            call.message,
+            "🔄 <b>Синхронизация активных инбаундов</b>\n\nАктивные подписки не найдены.",
+            reply_markup=admin_back_keyboard(),
+        )
+        return
+
+    service = _build_subscription_service(session)
+    success_ids: list[int] = []
+    failures: list[tuple[int, str]] = []
+    seen_user_ids: set[int] = set()
+    for sub in subs:
+        if sub.user_id in seen_user_ids:
+            continue
+        seen_user_ids.add(sub.user_id)
+        try:
+            await service.sync_existing_active_subscription(sub.user_id)
+            success_ids.append(sub.user_id)
+        except ValueError as exc:
+            failures.append((sub.user_id, str(exc)))
+
+    await edit_or_send(
+        call.message,
+        _format_sync_summary(len(seen_user_ids), success_ids, failures),
+        reply_markup=admin_back_keyboard(),
+    )
 
 
 @router.callback_query(F.data.startswith("admin:maintenance:set:"))

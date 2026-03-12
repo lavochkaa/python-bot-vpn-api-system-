@@ -6,6 +6,7 @@ from bot.db.models import Plan
 def admin_menu_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="👤 Клиенты", callback_data="admin:users")
+    builder.button(text="🔄 Синхронизировать активные", callback_data="admin:sync_active_inbounds")
     builder.button(text="🎟 Промокоды", callback_data="admin:promos")
     builder.button(text="🎫 Тикеты", callback_data="admin:tickets")
     builder.button(text="📢 Оповестить всех", callback_data="admin:broadcast")

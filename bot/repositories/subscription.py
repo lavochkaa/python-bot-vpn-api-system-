@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from bot.db.models import Subscription
@@ -26,3 +28,17 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             .options(selectinload(Subscription.plan))
         )
         return result.scalar_one_or_none()
+
+    async def get_all_current_active(self) -> list[Subscription]:
+        now = datetime.now(timezone.utc)
+        result = await self.session.execute(
+            select(Subscription)
+            .where(
+                Subscription.is_active == True,
+                Subscription.expires_at.is_not(None),
+                Subscription.expires_at > now,
+            )
+            .order_by(Subscription.expires_at.asc())
+            .options(selectinload(Subscription.plan))
+        )
+        return list(result.scalars().all())
