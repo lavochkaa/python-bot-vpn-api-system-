@@ -65,6 +65,19 @@ def _resolve_connected_devices(usage_info: dict | None) -> list[str]:
     return result
 
 
+def _device_emoji(label: str) -> str:
+    low = str(label or "").lower()
+    if "mac" in low or "ios" in low or "iphone" in low or "ipad" in low:
+        return "🍎"
+    if "android" in low:
+        return "🤖"
+    if "windows" in low:
+        return "🪟"
+    if "linux" in low or "ubuntu" in low or "debian" in low:
+        return "🐧"
+    return "📱"
+
+
 def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | None) -> tuple[str, float | None, int | None]:
     now = datetime.now(timezone.utc)
     expires = usage_info.get("expire_at") if usage_info else None
@@ -100,9 +113,10 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
     devices_title = f"{connected_count if connected_count is not None else '—'} / {device_limit}"
     devices_block = ""
     if connected_devices:
+        device_lines = [f"{_device_emoji(device)} {device}" for device in connected_devices]
+        devices_pre = "📱 Подключенные устройства:\n" + "\n".join(device_lines)
         devices_block = (
-            "\n📱 <b>Подключенные устройства:</b>\n"
-            f"<pre>{_escape_html(chr(10).join(connected_devices))}</pre>"
+            f"\n<pre>{_escape_html(devices_pre)}</pre>"
         )
 
     expires_title = expires.strftime("%d.%m.%Y %H:%M") if expires else "—"
