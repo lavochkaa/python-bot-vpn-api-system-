@@ -49,6 +49,18 @@ class ApiVpnKeyProvider(VpnKeyProvider):
     async def revoke_key(self, key: str) -> None:
         return None
 
+    def _resolve_user_ref(
+        self,
+        *,
+        subscription_uuid: str | None = None,
+        provider_subscription_id: str | None = None,
+    ) -> str | None:
+        for candidate in (subscription_uuid, provider_subscription_id):
+            value = str(candidate or "").strip()
+            if value.count("-") == 4 and len(value) >= 32:
+                return value
+        return None
+
     async def reset_user_traffic(
         self,
         *,
@@ -56,7 +68,10 @@ class ApiVpnKeyProvider(VpnKeyProvider):
         subscription_uuid: str | None = None,
         provider_subscription_id: str | None = None,
     ) -> bool:
-        target_uuid = provider_subscription_id or subscription_uuid
+        target_uuid = self._resolve_user_ref(
+            subscription_uuid=subscription_uuid,
+            provider_subscription_id=provider_subscription_id,
+        )
         if not target_uuid:
             existing = await self.client.find_user(telegram_id=user_id, username=f"tg_{user_id}")
             target_uuid = str(existing.get("uuid") or "") if existing else None
@@ -71,7 +86,10 @@ class ApiVpnKeyProvider(VpnKeyProvider):
         subscription_uuid: str | None = None,
         provider_subscription_id: str | None = None,
     ) -> dict | None:
-        target_uuid = provider_subscription_id or subscription_uuid
+        target_uuid = self._resolve_user_ref(
+            subscription_uuid=subscription_uuid,
+            provider_subscription_id=provider_subscription_id,
+        )
         return await self.client.get_user_usage(
             uuid=target_uuid,
             telegram_id=None if target_uuid else user_id,
