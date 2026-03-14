@@ -37,6 +37,34 @@ def _resolve_device_count(usage_info: dict | None) -> int | None:
     return connected_count
 
 
+def _escape_html(value: str) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _resolve_connected_devices(usage_info: dict | None) -> list[str]:
+    if not usage_info:
+        return []
+
+    raw_devices = usage_info.get("connected_devices")
+    if not isinstance(raw_devices, list):
+        return []
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_devices:
+        label = str(item or "").strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        result.append(label)
+    return result
+
+
 def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | None) -> tuple[str, float | None, int | None]:
     now = datetime.now(timezone.utc)
     expires = usage_info.get("expire_at") if usage_info else None
@@ -68,7 +96,13 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
         device_limit = max(0, int(settings.vpn_api_hwid_device_limit or 3))
 
     connected_count = _resolve_device_count(usage_info)
+    connected_devices = _resolve_connected_devices(usage_info)
     devices_title = f"{connected_count if connected_count is not None else '—'} / {device_limit}"
+    devices_block = ""
+    if connected_devices:
+        devices_block = "\n📱 <b>Подключенные устройства:</b>\n" + "\n".join(
+            f"• <b>{_escape_html(device)}</b>" for device in connected_devices
+        )
 
     expires_title = expires.strftime("%d.%m.%Y %H:%M") if expires else "—"
     text = (
@@ -76,6 +110,7 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
         f"Трафик: <b>{_format_gb(used_gb)} / {_format_gb(total_gb)} ГБ</b>\n"
         f"Действует до: <b>{expires_title}</b>\n"
         f"Устройства: <b>{devices_title}</b>"
+        f"{devices_block}"
     )
     return text, remaining_gb, remaining_days
 
