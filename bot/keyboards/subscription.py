@@ -41,7 +41,7 @@ def subscription_configurator_keyboard(
     else:
         builder.button(text="🎟 Промокод", callback_data="sub_promo_enter")
     builder.button(text="💳 Оплатить", callback_data="sub_pay")
-    builder.button(text="🔙 Назад", callback_data="menu:subscription")
+    builder.button(text="🔙 Назад", callback_data="menu:main")
     builder.adjust(3, 4, 2, 1)
     return builder.as_markup()
 
