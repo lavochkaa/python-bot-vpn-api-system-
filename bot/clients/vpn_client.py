@@ -48,6 +48,7 @@ class VpnApiClient:
         now = datetime.now(timezone.utc)
         expire_at = now + timedelta(days=days)
         traffic_limit_bytes = self._gb_to_bytes(traffic_gb)
+        traffic_reset_strategy = self._normalize_traffic_reset_strategy(traffic_reset_strategy)
 
         if existing:
             existing_uuid = str(existing.get("uuid") or "").strip()
@@ -75,12 +76,9 @@ class VpnApiClient:
                 "hwidDeviceLimit": device_limit,
             }
             if internal_squad_uuid:
-                payload["activeInternalSquads"] = [{"uuid": internal_squad_uuid}]
+                payload["activeInternalSquads"] = [internal_squad_uuid]
             update_attempts: tuple[tuple[str, str], ...] = (
-                ("PATCH", f"/api/users/{existing_uuid}"),
-                ("PUT", f"/api/users/{existing_uuid}"),
                 ("PATCH", "/api/users"),
-                ("PUT", "/api/users"),
             )
             return await self._request_method_path_fallback(update_attempts, json=payload)
 
@@ -94,7 +92,7 @@ class VpnApiClient:
             "hwidDeviceLimit": device_limit,
         }
         if internal_squad_uuid:
-            payload["activeInternalSquads"] = [{"uuid": internal_squad_uuid}]
+            payload["activeInternalSquads"] = [internal_squad_uuid]
         return await self._request_with_fallback(
             "POST",
             ("/users", "/api/users"),
@@ -281,6 +279,16 @@ class VpnApiClient:
 
     def _gb_to_bytes(self, traffic_gb: int) -> int:
         return int(traffic_gb) * 1024 * 1024 * 1024
+
+    def _normalize_traffic_reset_strategy(self, value: str) -> str:
+        normalized = str(value or "").strip().upper()
+        aliases = {
+            "MONTHLY": "MONTH",
+            "MONTH": "MONTH",
+            "WEEKLY": "WEEK",
+            "DAILY": "DAY",
+        }
+        return aliases.get(normalized, normalized or "NO_RESET")
 
     def _bytes_to_gb(self, value: int | None) -> float | None:
         if value is None:
