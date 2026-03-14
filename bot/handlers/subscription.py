@@ -86,8 +86,12 @@ async def _edit_only(message: Message, text: str, reply_markup=None) -> None:
     if await _try_edit_caption(safe_rendered):
         return
 
-    # In this flow, do not send extra fallback messages.
-    return
+    try:
+        await message.answer(safe_rendered, reply_markup=reply_markup)
+    except TelegramBadRequest:
+        return
+    except TelegramNetworkError:
+        return
 
 
 async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply_markup=None) -> None:
