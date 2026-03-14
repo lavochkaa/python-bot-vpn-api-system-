@@ -143,12 +143,15 @@ class VpnApiClient:
         if used_bytes is None and limit_bytes is None:
             return None
         connected_devices = await self._get_connected_devices(user)
+        connected_devices_count = self._extract_device_count(user)
+        if connected_devices and connected_devices_count is None:
+            connected_devices_count = len(connected_devices)
         return {
             "current_usage_gb": self._bytes_to_gb(used_bytes),
             "usage_limit_gb": self._bytes_to_gb(limit_bytes),
             "device_limit": self._to_int(user.get("hwidDeviceLimit")),
             "last_user_agent": user.get("subLastUserAgent"),
-            "connected_devices_count": len(connected_devices) if connected_devices else None,
+            "connected_devices_count": connected_devices_count,
             "connected_devices": connected_devices,
             "last_opened_at": user.get("subLastOpenedAt"),
         }
@@ -298,6 +301,10 @@ class VpnApiClient:
         if not uuid and not user_id:
             return []
 
+        direct_devices = self._extract_connected_devices(user, user_uuid=uuid, user_id=user_id)
+        if direct_devices:
+            return direct_devices
+
         attempts: list[tuple[str, dict[str, str] | None]] = []
         if uuid:
             attempts.extend(
@@ -308,6 +315,8 @@ class VpnApiClient:
                     ("/api/hwid-devices/by-user", {"userUuid": uuid}),
                     (f"/api/hwid-devices/by-user/{uuid}", None),
                     (f"/api/users/{uuid}/hwid-devices", None),
+                    (f"/api/users/{uuid}/subscription-requests", None),
+                    (f"/api/users/{uuid}/subscription-request-history", None),
                 ]
             )
         if user_id:
@@ -319,16 +328,31 @@ class VpnApiClient:
                     ("/api/hwid-devices/by-user", {"userId": user_id}),
                     (f"/api/hwid-devices/by-user/{user_id}", None),
                     (f"/api/users/{user_id}/hwid-devices", None),
+                    (f"/api/users/{user_id}/subscription-requests", None),
+                    (f"/api/users/{user_id}/subscription-request-history", None),
                 ]
             )
+        attempts.extend(
+            [
+                ("/api/hwid-devices", None),
+                ("/api/hwid-devices", {"start": "0", "size": "500"}),
+                ("/api/hwid-devices/stats", None),
+            ]
+        )
         for path, params in attempts:
             payload = await self._request_optional_json("GET", path, params=params)
-            devices = self._extract_connected_devices(payload)
+            devices = self._extract_connected_devices(payload, user_uuid=uuid, user_id=user_id)
             if devices:
                 return devices
         return []
 
-    def _extract_connected_devices(self, payload: Any) -> list[str]:
+    def _extract_connected_devices(
+        self,
+        payload: Any,
+        *,
+        user_uuid: str | None = None,
+        user_id: str | None = None,
+    ) -> list[str]:
         if payload is None:
             return []
 
@@ -336,12 +360,36 @@ class VpnApiClient:
         if isinstance(payload, list):
             candidates = payload
         elif isinstance(payload, dict):
+            nested_device_lists = (
+                payload.get("hwidDevices"),
+                payload.get("userHwidDevices"),
+                payload.get("subscriptionRequests"),
+                payload.get("subscriptionRequestHistory"),
+            )
+            for value in nested_device_lists:
+                if isinstance(value, list):
+                    candidates = value
+                    break
             for key in ("response", "devices", "items", "data", "results"):
+                if candidates:
+                    break
                 value = payload.get(key)
                 if isinstance(value, list):
                     candidates = value
                     break
                 if isinstance(value, dict):
+                    for inner_direct_key in (
+                        "hwidDevices",
+                        "userHwidDevices",
+                        "subscriptionRequests",
+                        "subscriptionRequestHistory",
+                    ):
+                        inner_direct_value = value.get(inner_direct_key)
+                        if isinstance(inner_direct_value, list):
+                            candidates = inner_direct_value
+                            break
+                    if candidates:
+                        break
                     for inner_key in ("devices", "items", "data", "results"):
                         inner_value = value.get(inner_key)
                         if isinstance(inner_value, list):
@@ -353,6 +401,8 @@ class VpnApiClient:
         result: list[str] = []
         for item in candidates:
             if not isinstance(item, dict):
+                continue
+            if not self._device_matches_user(item, user_uuid=user_uuid, user_id=user_id):
                 continue
             device_info = item.get("deviceInfo") if isinstance(item.get("deviceInfo"), dict) else {}
             os_name = (
@@ -374,6 +424,8 @@ class VpnApiClient:
                 or item.get("friendlyName")
                 or item.get("clientName")
                 or item.get("hwid")
+                or item.get("userAgent")
+                or item.get("subLastUserAgent")
                 or device_info.get("model")
                 or device_info.get("name")
             )
@@ -384,6 +436,70 @@ class VpnApiClient:
             if label:
                 result.append(label)
         return list(dict.fromkeys(result))
+
+    def _device_matches_user(
+        self,
+        item: dict[str, Any],
+        *,
+        user_uuid: str | None = None,
+        user_id: str | None = None,
+    ) -> bool:
+        if not user_uuid and not user_id:
+            return True
+
+        nested_user = item.get("user") if isinstance(item.get("user"), dict) else {}
+        candidates = (
+            item.get("userUuid"),
+            item.get("uuid"),
+            item.get("ownerUuid"),
+            item.get("user_uuid"),
+            item.get("owner_uuid"),
+            nested_user.get("uuid"),
+        )
+        if user_uuid and any(str(value or "").strip() == user_uuid for value in candidates):
+            return True
+
+        id_candidates = (
+            item.get("userId"),
+            item.get("ownerId"),
+            item.get("user_id"),
+            item.get("owner_id"),
+            nested_user.get("id"),
+        )
+        if user_id and any(str(value or "").strip() == user_id for value in id_candidates):
+            return True
+
+        # If payload is already scoped to a single user, it may omit ownership fields entirely.
+        scoped_keys = ("deviceOs", "deviceModel", "xDeviceOs", "xDeviceModel", "hwid", "deviceInfo", "userAgent")
+        if any(key in item for key in scoped_keys):
+            return True
+
+        return False
+
+    def _extract_device_count(self, payload: Any) -> int | None:
+        if not isinstance(payload, dict):
+            return None
+
+        for key in (
+            "connectedDevicesCount",
+            "connected_devices_count",
+            "hwidDevicesCount",
+            "devicesCount",
+            "deviceCount",
+        ):
+            value = self._to_int(payload.get(key))
+            if value is not None:
+                return value
+
+        for key in ("hwidDevices", "userHwidDevices", "devices"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return len(value)
+
+        response = payload.get("response")
+        if isinstance(response, dict):
+            return self._extract_device_count(response)
+        return None
 
     async def _list_users(self) -> list[dict[str, Any]]:
         for path in ("/api/users",):
