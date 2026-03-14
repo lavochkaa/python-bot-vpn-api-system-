@@ -304,6 +304,8 @@ class VpnApiClient:
         if uuid:
             attempts.extend(
                 [
+                    (f"/api/hwid/devices/{uuid}", None),
+                    ("/api/hwid/devices", {"userUuid": uuid}),
                     ("/api/hwid-devices", {"userUuid": uuid}),
                     ("/api/hwid-devices", {"uuid": uuid}),
                     ("/api/hwid-devices", {"ownerUuid": uuid}),
@@ -317,6 +319,7 @@ class VpnApiClient:
         if user_id:
             attempts.extend(
                 [
+                    ("/api/hwid/devices", {"userId": user_id}),
                     ("/api/hwid-devices", {"userId": user_id}),
                     ("/api/hwid-devices", {"user_id": user_id}),
                     ("/api/hwid-devices", {"ownerId": user_id}),
@@ -329,6 +332,9 @@ class VpnApiClient:
             )
         attempts.extend(
             [
+                ("/api/hwid/devices", None),
+                ("/api/hwid/devices", {"start": "0", "size": "500"}),
+                ("/api/hwid/stats", None),
                 ("/api/hwid-devices", None),
                 ("/api/hwid-devices", {"start": "0", "size": "500"}),
                 ("/api/hwid-devices/stats", None),
