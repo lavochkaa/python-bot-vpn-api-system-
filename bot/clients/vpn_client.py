@@ -101,12 +101,7 @@ class VpnApiClient:
         uuid: str | None = None,
     ) -> dict[str, Any] | None:
         if uuid:
-            for path in (
-                f"/users/{uuid}",
-                f"/users/by-uuid/{uuid}",
-                f"/api/users/{uuid}",
-                f"/api/users/by-uuid/{uuid}",
-            ):
+            for path in (f"/api/users/{uuid}",):
                 try:
                     return await self._request("GET", path)
                 except ValueError:
@@ -240,7 +235,7 @@ class VpnApiClient:
         raise ValueError("VPN API request failed.")
 
     async def _list_users(self) -> list[dict[str, Any]]:
-        for path in ("/users", "/api/users"):
+        for path in ("/api/users",):
             try:
                 data = await self._request("GET", path)
             except ValueError:

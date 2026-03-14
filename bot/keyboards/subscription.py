@@ -5,14 +5,8 @@ from bot.constants.subscription_pricing import DURATION_MONTH_OPTIONS, TRAFFIC_O
 
 def subscription_activated_keyboard(
     show_reset_traffic: bool = False,
-    *,
-    connect_url: str | None = None,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    if connect_url:
-        builder.button(text="🔌 Подключиться", url=connect_url)
-    else:
-        builder.button(text="🔌 Подключиться", callback_data="menu:connect")
     builder.button(text="🔄 Изменить тариф", callback_data="menu:subscription:configure")
     if show_reset_traffic:
         builder.button(text="♻️ Сбросить трафик (79 ₽)", callback_data="sub_reset_traffic")

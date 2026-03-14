@@ -720,6 +720,6 @@ async def _finish_purchase(
         "✅ Подписка активирована.\n"
         f"Действует до: <b>{sub.expires_at.strftime('%d.%m.%Y')}</b>"
         f"{key_text}",
-        reply_markup=subscription_activated_keyboard(show_reset_traffic=True, connect_url=connect_url),
+            reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
     )
     await state.clear()
