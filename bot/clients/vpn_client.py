@@ -360,6 +360,9 @@ class VpnApiClient:
                 payload.get("userHwidDevices"),
                 payload.get("subscriptionRequests"),
                 payload.get("subscriptionRequestHistory"),
+                payload.get("history"),
+                payload.get("records"),
+                payload.get("requests"),
             )
             for value in nested_device_lists:
                 if isinstance(value, list):
@@ -378,6 +381,9 @@ class VpnApiClient:
                         "userHwidDevices",
                         "subscriptionRequests",
                         "subscriptionRequestHistory",
+                        "history",
+                        "records",
+                        "requests",
                     ):
                         inner_direct_value = value.get(inner_direct_key)
                         if isinstance(inner_direct_value, list):
@@ -405,10 +411,13 @@ class VpnApiClient:
                 or item.get("xDeviceOs")
                 or item.get("os")
                 or item.get("platform")
+                or item.get("devicePlatform")
                 or item.get("clientType")
                 or item.get("device_type")
+                or item.get("osName")
                 or device_info.get("os")
                 or device_info.get("platform")
+                or device_info.get("deviceOs")
             )
             model_name = (
                 item.get("deviceModel")
@@ -421,8 +430,11 @@ class VpnApiClient:
                 or item.get("hwid")
                 or item.get("userAgent")
                 or item.get("subLastUserAgent")
+                or item.get("deviceName")
+                or item.get("device")
                 or device_info.get("model")
                 or device_info.get("name")
+                or device_info.get("deviceModel")
             )
             if not os_name and not model_name:
                 continue
@@ -481,20 +493,52 @@ class VpnApiClient:
             "hwidDevicesCount",
             "devicesCount",
             "deviceCount",
+            "total",
         ):
             value = self._to_int(payload.get(key))
             if value is not None:
                 return value
 
-        for key in ("hwidDevices", "userHwidDevices", "devices"):
+        for key in (
+            "hwidDevices",
+            "userHwidDevices",
+            "devices",
+            "subscriptionRequests",
+            "subscriptionRequestHistory",
+            "history",
+            "records",
+            "requests",
+        ):
             value = payload.get(key)
             if isinstance(value, list):
-                return len(value)
+                return self._count_unique_devices(value)
 
         response = payload.get("response")
         if isinstance(response, dict):
             return self._extract_device_count(response)
         return None
+
+    def _count_unique_devices(self, items: list[Any]) -> int | None:
+        unique_keys: set[str] = set()
+        plain_count = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            plain_count += 1
+            key = str(
+                item.get("hwid")
+                or item.get("deviceHwId")
+                or item.get("deviceId")
+                or item.get("deviceUUID")
+                or item.get("userAgent")
+                or item.get("subLastUserAgent")
+                or ""
+            ).strip()
+            if key:
+                unique_keys.add(key)
+        if unique_keys:
+            return len(unique_keys)
+        return plain_count or None
 
     async def _list_users(self) -> list[dict[str, Any]]:
         for path in ("/api/users",):
