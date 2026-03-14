@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import aiohttp
 from sqlalchemy.ext.asyncio import AsyncSession
+from bot.config import settings
 from bot.db.models import User, Subscription
 from bot.providers.vpn.factory import build_vpn_provider
 
@@ -63,7 +64,7 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
             except (TypeError, ValueError):
                 device_limit = None
     if device_limit is None:
-        device_limit = 2
+        device_limit = max(0, int(settings.vpn_api_hwid_device_limit or 3))
 
     connected_count = _resolve_device_count(usage_info)
     devices_title = f"{connected_count if connected_count is not None else '—'} / {device_limit}"
@@ -192,7 +193,7 @@ async def build_main_menu_snapshot(
     session: AsyncSession,
     *,
     include_live_usage: bool = True,
-    usage_timeout_seconds: float = 2.0,
+    usage_timeout_seconds: float = 6.0,
 ) -> MainMenuSnapshot:
     from bot.repositories.subscription import SubscriptionRepository
 
