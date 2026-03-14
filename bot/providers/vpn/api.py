@@ -11,6 +11,7 @@ class ApiVpnKeyProvider(VpnKeyProvider):
                 api_key=settings.vpn_api_key,
                 timeout_seconds=settings.vpn_api_timeout_seconds,
                 verify_ssl=settings.vpn_api_verify_ssl,
+                force_ipv4=settings.vpn_api_force_ipv4,
             )
         )
 

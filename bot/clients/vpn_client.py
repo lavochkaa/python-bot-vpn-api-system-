@@ -1,4 +1,5 @@
 import logging
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,9 +16,16 @@ class VpnClientConfig:
     api_key: str
     timeout_seconds: int = 20
     verify_ssl: bool = True
+    force_ipv4: bool = True
 
 
 class VpnApiClient:
+    _USER_AGENT = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/145.0.0.0 Safari/537.36"
+    )
+
     def __init__(self, config: VpnClientConfig):
         if not config.base_url:
             raise ValueError("VPN_API_BASE_URL is not configured.")
@@ -161,28 +169,57 @@ class VpnApiClient:
 
     async def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
         url = self.config.base_url.rstrip("/") + "/" + path.lstrip("/")
-        headers = {
-            "Authorization": f"Bearer {self.config.api_key}",
-            "Content-Type": "application/json",
-        }
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
-        connector = aiohttp.TCPConnector(ssl=self.config.verify_ssl)
+        connector = aiohttp.TCPConnector(
+            ssl=self.config.verify_ssl,
+            family=socket.AF_INET if self.config.force_ipv4 else socket.AF_UNSPEC,
+            enable_cleanup_closed=True,
+        )
+        headers_candidates = self._build_headers_candidates(method, json=json)
+        last_error: Exception | None = None
 
         try:
             async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-                async with session.request(method, url, headers=headers, json=json) as response:
-                    text = await response.text()
-                    if response.status >= 400:
-                        logger.error("VPN API error %s %s: %s %s", method, url, response.status, text)
-                        raise ValueError(f"VPN API error: HTTP {response.status}")
-                    ctype = (response.headers.get("Content-Type") or "").lower()
-                    if "application/json" in ctype:
-                        data = await response.json()
-                        return self._unwrap_response(data)
-                    return {"raw": text}
+                for headers in headers_candidates:
+                    try:
+                        async with session.request(method, url, headers=headers, json=json) as response:
+                            text = await response.text()
+                            if response.status >= 400:
+                                logger.error("VPN API error %s %s: %s %s", method, url, response.status, text)
+                                raise ValueError(f"VPN API error: HTTP {response.status}")
+                            ctype = (response.headers.get("Content-Type") or "").lower()
+                            if "application/json" in ctype:
+                                data = await response.json()
+                                return self._unwrap_response(data)
+                            return {"raw": text}
+                    except ValueError:
+                        raise
+                    except aiohttp.ClientError as exc:
+                        last_error = exc
+                        logger.warning("VPN API transport retry %s %s via alternate headers: %s", method, url, exc)
+                        continue
         except aiohttp.ClientError as exc:
-            logger.exception("VPN API request failed %s %s", method, url)
-            raise ValueError("VPN API is unavailable.") from exc
+            last_error = exc
+
+        if last_error is not None:
+            logger.exception("VPN API request failed %s %s", method, url, exc_info=last_error)
+            raise ValueError("VPN API is unavailable.") from last_error
+        raise ValueError("VPN API is unavailable.")
+
+    def _build_headers_candidates(self, method: str, *, json: dict[str, Any] | None = None) -> tuple[dict[str, str], ...]:
+        base_headers = {
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": self._USER_AGENT,
+            "Connection": "close",
+        }
+        if json is not None and method.upper() in {"POST", "PUT", "PATCH"}:
+            base_headers["Content-Type"] = "application/json"
+
+        return (
+            {**base_headers, "Authorization": f"Bearer {self.config.api_key}", "X-API-Key": self.config.api_key},
+            {**base_headers, "Authorization": f"Bearer {self.config.api_key}"},
+            {**base_headers, "X-API-Key": self.config.api_key},
+        )
 
     async def _request_with_fallback(
         self,
