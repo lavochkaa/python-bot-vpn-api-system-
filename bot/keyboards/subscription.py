@@ -3,9 +3,16 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.constants.subscription_pricing import DURATION_MONTH_OPTIONS, TRAFFIC_OPTIONS
 
-def subscription_activated_keyboard(show_reset_traffic: bool = False) -> InlineKeyboardMarkup:
+def subscription_activated_keyboard(
+    show_reset_traffic: bool = False,
+    *,
+    connect_url: str | None = None,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🔌 Подключиться", callback_data="menu:connect")
+    if connect_url:
+        builder.button(text="🔌 Подключиться", url=connect_url)
+    else:
+        builder.button(text="🔌 Подключиться", callback_data="menu:connect")
     builder.button(text="🔄 Изменить тариф", callback_data="menu:subscription:configure")
     if show_reset_traffic:
         builder.button(text="♻️ Обновить гигабайты (79 ₽)", callback_data="sub_reset_traffic")

@@ -16,6 +16,7 @@ from bot.keyboards.main_menu import (
 )
 from bot.utils.channel_subscription import check_channel_subscription
 from bot.utils.formatters import build_main_menu_snapshot
+from bot.utils.maintenance import get_user_connect_url
 from bot.utils.messages import edit_or_send_banner, send_or_answer_banner
 
 router = Router()
@@ -94,10 +95,11 @@ async def _handle_start(message: Message, session: AsyncSession, state: FSMConte
     )
     try:
         snapshot = await build_main_menu_snapshot(user, session)
+        connect_url = await get_user_connect_url(session, user.id)
         await send_or_answer_banner(
             message,
             snapshot.text,
-            reply_markup=main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(connect_url),
             banner_path=settings.message_banner_main_path,
         )
         await _maybe_send_subscription_warning(
@@ -157,7 +159,8 @@ async def check_subscription_callback(call: CallbackQuery, session: AsyncSession
     )
     try:
         snapshot = await build_main_menu_snapshot(user, session)
-        await _safe_edit_text(call, snapshot.text, main_menu_keyboard())
+        connect_url = await get_user_connect_url(session, user.id)
+        await _safe_edit_text(call, snapshot.text, main_menu_keyboard(connect_url))
         if call.message:
             await _maybe_send_subscription_warning(
                 call.message,
@@ -181,7 +184,8 @@ async def back_to_menu(call: CallbackQuery, session: AsyncSession) -> None:
     )
     try:
         snapshot = await build_main_menu_snapshot(user, session)
-        await _safe_edit_text(call, snapshot.text, main_menu_keyboard())
+        connect_url = await get_user_connect_url(session, user.id)
+        await _safe_edit_text(call, snapshot.text, main_menu_keyboard(connect_url))
         if call.message:
             await _maybe_send_subscription_warning(
                 call.message,

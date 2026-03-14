@@ -681,22 +681,23 @@ async def _finish_purchase(
 
     user_keys = await VpnKeyRepository(session).get_user_keys(user_id, limit=1)
     key_text = ""
+    connect_url = None
     if user_keys:
         key_value = user_keys[0].key
         if key_value.startswith(("http://", "https://")):
             safe_url = key_value.replace("<", "").replace(">", "")
+            connect_url = key_value
             key_text = f"\n\n🔌 <b>Ссылка подписки:</b>\n{safe_url}"
         elif len(key_value) <= 800 and "\n" not in key_value:
-            key_text = "\n\n🔌 Подписка готова. Откройте раздел «Подключиться», чтобы получить конфиг."
+            key_text = "\n\n🔌 Подписка готова."
         else:
-            key_text = "\n\n🔌 Подписка готова. Откройте раздел «Подключиться», чтобы получить конфиг."
+            key_text = "\n\n🔌 Подписка готова."
 
     await _edit_only(
         message,
         "✅ Подписка активирована.\n"
         f"Действует до: <b>{sub.expires_at.strftime('%d.%m.%Y')}</b>"
-        f"{key_text}\n\n"
-        "Кнопка «Подключиться» откроет инструкцию и подключение.",
-        reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
+        f"{key_text}",
+        reply_markup=subscription_activated_keyboard(show_reset_traffic=True, connect_url=connect_url),
     )
     await state.clear()

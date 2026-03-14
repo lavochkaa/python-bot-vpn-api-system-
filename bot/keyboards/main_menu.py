@@ -2,9 +2,12 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
+def main_menu_keyboard(connect_url: str | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="🔌 Подключиться", callback_data="menu:connect")
+    if connect_url:
+        builder.button(text="🔌 Подключиться", url=connect_url)
+    else:
+        builder.button(text="🔌 Подключиться", callback_data="menu:connect")
     builder.button(text="💳 Баланс", callback_data="menu:balance")
     builder.button(text="📦 Подписка", callback_data="menu:subscription")
     builder.button(text="ℹ️ Информация", url="https://teletype.in/@crystalvpn_bot/offerta")
