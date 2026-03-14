@@ -101,10 +101,17 @@ async def build_main_menu_snapshot(
         show_type=False,
         usage_info=usage_info,
     )
+    if sub:
+        subscription_block = (
+            "📦 <b>Текущая подписка</b>\n\n"
+            f"{sub_info}"
+        )
+    else:
+        subscription_block = sub_info
     text = (
         f"👋 Привет, <b>{user.full_name or 'пользователь'}</b>!\n\n"
         f"💳 Баланс: <b>{user.balance} ₽</b>\n\n"
-        f"{sub_info}"
+        f"{subscription_block}"
     )
     return MainMenuSnapshot(text=text, remaining_gb=remaining_gb, remaining_days=remaining_days)
 
