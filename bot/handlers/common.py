@@ -23,6 +23,14 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
+async def _build_fresh_main_menu_snapshot(user, session: AsyncSession):
+    from bot.repositories.subscription import SubscriptionRepository
+
+    sub = await SubscriptionRepository(session).get_active(user.id)
+    invalidate_usage_cache(user, sub)
+    return await build_main_menu_snapshot(user, session, include_live_usage=True)
+
+
 async def _safe_edit_text(call: CallbackQuery, text: str, reply_markup) -> None:
     try:
         await edit_or_send_banner(
@@ -100,7 +108,7 @@ async def _handle_start(message: Message, session: AsyncSession, state: FSMConte
         full_name=message.from_user.full_name,
     )
     try:
-        snapshot = await build_main_menu_snapshot(user, session)
+        snapshot = await _build_fresh_main_menu_snapshot(user, session)
         connect_url = await get_user_connect_url(session, user.id)
         await send_or_answer_banner(
             message,
@@ -164,7 +172,7 @@ async def check_subscription_callback(call: CallbackQuery, session: AsyncSession
         full_name=call.from_user.full_name,
     )
     try:
-        snapshot = await build_main_menu_snapshot(user, session)
+        snapshot = await _build_fresh_main_menu_snapshot(user, session)
         connect_url = await get_user_connect_url(session, user.id)
         await _safe_edit_text(call, snapshot.text, main_menu_keyboard(connect_url))
         if call.message:
@@ -189,7 +197,7 @@ async def back_to_menu(call: CallbackQuery, session: AsyncSession) -> None:
         full_name=call.from_user.full_name,
     )
     try:
-        snapshot = await build_main_menu_snapshot(user, session)
+        snapshot = await _build_fresh_main_menu_snapshot(user, session)
         connect_url = await get_user_connect_url(session, user.id)
         await _safe_edit_text(call, snapshot.text, main_menu_keyboard(connect_url))
         if call.message:
@@ -202,25 +210,3 @@ async def back_to_menu(call: CallbackQuery, session: AsyncSession) -> None:
         logger.exception("Failed to render main menu for user_id=%s", call.from_user.id)
         await _safe_edit_text(call, "👋 Бот активен.\n\nОткройте главное меню:", main_menu_keyboard())
     await call.answer()
-
-
-@router.callback_query(lambda c: c.data == "menu:main:refresh")
-async def refresh_main_menu(call: CallbackQuery, session: AsyncSession) -> None:
-    repo = UserRepository(session)
-    user, _ = await repo.get_or_create(
-        tg_id=call.from_user.id,
-        username=call.from_user.username,
-        full_name=call.from_user.full_name,
-    )
-    from bot.repositories.subscription import SubscriptionRepository
-
-    sub = await SubscriptionRepository(session).get_active(user.id)
-    invalidate_usage_cache(user, sub)
-    try:
-        snapshot = await build_main_menu_snapshot(user, session, include_live_usage=True)
-        connect_url = await get_user_connect_url(session, user.id)
-        await _safe_edit_text(call, snapshot.text, main_menu_keyboard(connect_url))
-        await call.answer("Данные обновлены")
-    except Exception:
-        logger.exception("Failed to refresh main menu for user_id=%s", call.from_user.id)
-        await call.answer("Не удалось обновить данные", show_alert=True)

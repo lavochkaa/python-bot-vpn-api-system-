@@ -33,6 +33,7 @@ from bot.services.subscription import SubscriptionService
 from bot.states.subscription import SubscriptionStates
 from bot.utils.messages import _short_text
 from bot.utils.formatters import invalidate_usage_cache
+from bot.utils.formatters import format_subscription_for_user
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -256,14 +257,22 @@ def _build_service(session: AsyncSession) -> SubscriptionService:
     )
 
 
-def _build_active_subscription_text(sub) -> str:
-    traffic_title = f"{sub.traffic_gb} ГБ" if sub.traffic_gb else "—"
-    expires_title = sub.expires_at.strftime("%d.%m.%Y") if sub.expires_at else "—"
+async def _build_active_subscription_text(sub, *, user_id: int, subscription_uuid: str | None) -> str:
+    provider = build_vpn_provider()
+    usage_info = None
+    try:
+        usage_info = await provider.get_user_usage(
+            user_id=user_id,
+            subscription_uuid=subscription_uuid,
+            provider_subscription_id=sub.provider_subscription_id,
+        )
+    except Exception:
+        logger.exception("Failed to fetch live usage for user_id=%s", user_id)
+    sub_text, _, _ = await format_subscription_for_user(sub, show_type=False, usage_info=usage_info)
     return (
         "📦 <b>У вас уже есть активная подписка</b>\n\n"
         "<b>Текущие параметры:</b>\n"
-        f"• Трафик: <b>{traffic_title}</b>\n"
-        f"• Действует до: <b>{expires_title}</b>\n\n"
+        f"{sub_text}\n\n"
         "Вы можете изменить конфигурацию или сбросить трафик."
     )
 
@@ -306,9 +315,16 @@ async def subscription_menu(call: CallbackQuery, state: FSMContext, session: Asy
     await state.clear()
     sub = await SubscriptionRepository(session).get_active(call.from_user.id)
     if sub:
+        user = await UserRepository(session).get_by_tg_id(call.from_user.id)
+        if user:
+            invalidate_usage_cache(user, sub)
         await _edit_only(
             call.message,
-            _build_active_subscription_text(sub),
+            await _build_active_subscription_text(
+                sub,
+                user_id=call.from_user.id,
+                subscription_uuid=user.subscription_uuid if user else None,
+            ),
             reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
         )
         await call.answer()
