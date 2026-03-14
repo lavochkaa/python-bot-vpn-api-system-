@@ -100,8 +100,9 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
     devices_title = f"{connected_count if connected_count is not None else '—'} / {device_limit}"
     devices_block = ""
     if connected_devices:
-        devices_block = "\n📱 <b>Подключенные устройства:</b>\n" + "\n".join(
-            f"<code>{_escape_html(device)}</code>" for device in connected_devices
+        devices_block = (
+            "\n📱 <b>Подключенные устройства:</b>\n"
+            f"<pre>{_escape_html(chr(10).join(connected_devices))}</pre>"
         )
 
     expires_title = expires.strftime("%d.%m.%Y %H:%M") if expires else "—"
