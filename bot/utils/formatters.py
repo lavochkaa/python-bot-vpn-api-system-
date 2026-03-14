@@ -21,7 +21,8 @@ class MainMenuSnapshot:
 def _format_gb(value: float | None) -> str:
     if value is None:
         return "—"
-    return f"{value:.1f}".rstrip("0").rstrip(".")
+    precision = 2 if 0 < abs(value) < 1 else 1
+    return f"{value:.{precision}f}".rstrip("0").rstrip(".")
 
 
 def _resolve_device_count(usage_info: dict | None) -> int | None:
