@@ -15,7 +15,7 @@ def subscription_activated_keyboard(
         builder.button(text="🔌 Подключиться", callback_data="menu:connect")
     builder.button(text="🔄 Изменить тариф", callback_data="menu:subscription:configure")
     if show_reset_traffic:
-        builder.button(text="♻️ Обновить гигабайты (79 ₽)", callback_data="sub_reset_traffic")
+        builder.button(text="♻️ Сбросить трафик (79 ₽)", callback_data="sub_reset_traffic")
     builder.button(text="🔙 Назад", callback_data="menu:main")
     builder.adjust(1)
     return builder.as_markup()

@@ -46,6 +46,12 @@ def _store_cached_usage(user: User, sub: Subscription, usage_info: dict | None) 
     )
 
 
+def invalidate_usage_cache(user: User, sub: Subscription | None) -> None:
+    if sub is None:
+        return
+    _USAGE_CACHE.pop(_usage_cache_key(user, sub), None)
+
+
 async def format_main_menu(user: User, session: AsyncSession) -> str:
     snapshot = await build_main_menu_snapshot(user, session)
     return snapshot.text
@@ -124,7 +130,10 @@ async def format_subscription_for_user(
             total_gb = float(provider_total)
     if total_gb is not None and used_gb is not None:
         remaining_gb = max(total_gb - float(used_gb), 0.0)
-        traffic_title = f"{int(total_gb) if float(total_gb).is_integer() else round(total_gb, 2)} ГБ (исп: {round(float(used_gb), 2)} ГБ)"
+        total_title = int(total_gb) if float(total_gb).is_integer() else round(total_gb, 2)
+        used_title = round(float(used_gb), 2)
+        remaining_title = round(float(remaining_gb), 2)
+        traffic_title = f"{total_title} ГБ (исп: {used_title} ГБ, ост: {remaining_title} ГБ)"
     elif total_gb is not None:
         remaining_gb = None
         traffic_title = f"{int(total_gb) if float(total_gb).is_integer() else round(total_gb, 2)} ГБ"

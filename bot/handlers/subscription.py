@@ -32,6 +32,7 @@ from bot.services.promo import PromoService
 from bot.services.subscription import SubscriptionService
 from bot.states.subscription import SubscriptionStates
 from bot.utils.messages import _short_text
+from bot.utils.formatters import invalidate_usage_cache
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -415,6 +416,7 @@ async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, ses
         )
     )
     await session.commit()
+    invalidate_usage_cache(user, active_sub)
 
     await _edit_only(
         call.message,

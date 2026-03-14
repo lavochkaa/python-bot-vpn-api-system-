@@ -8,11 +8,12 @@ def main_menu_keyboard(connect_url: str | None = None) -> InlineKeyboardMarkup:
         builder.button(text="🔌 Подключиться", url=connect_url)
     else:
         builder.button(text="🔌 Подключиться", callback_data="menu:connect")
+    builder.button(text="🔄 Обновить данные", callback_data="menu:main:refresh")
     builder.button(text="💳 Баланс", callback_data="menu:balance")
     builder.button(text="📦 Подписка", callback_data="menu:subscription")
     builder.button(text="ℹ️ Информация", url="https://teletype.in/@crystalvpn_bot/offerta")
     builder.button(text="🆘 Поддержка", callback_data="menu:support")
-    builder.adjust(1, 2, 2)
+    builder.adjust(1, 1, 2, 2)
     return builder.as_markup()
 
 
@@ -36,7 +37,7 @@ def subscription_warning_keyboard(
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if show_refresh_gb:
-        builder.button(text="♻️ Обновить гигабайты", callback_data="sub_reset_traffic")
+        builder.button(text="🔄 Обновить данные", callback_data="menu:main:refresh")
     if show_renew:
         builder.button(text="🔄 Продлить подписку", callback_data="menu:subscription:configure")
     builder.button(text="📦 Открыть подписку", callback_data="menu:subscription")
