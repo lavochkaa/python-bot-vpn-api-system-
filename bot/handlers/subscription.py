@@ -29,6 +29,7 @@ from bot.repositories.plan import PlanRepository
 from bot.repositories.promo import PromoRepository
 from bot.repositories.subscription import SubscriptionRepository
 from bot.repositories.user import UserRepository
+from bot.repositories.vpn_key import VpnKeyRepository
 from bot.services.promo import PromoService
 from bot.services.subscription import SubscriptionService
 from bot.states.subscription import SubscriptionStates
