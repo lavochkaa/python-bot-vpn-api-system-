@@ -106,10 +106,12 @@ class VpnApiClient:
         username: str | None = None,
         uuid: str | None = None,
     ) -> dict[str, Any] | None:
+        direct_user: dict[str, Any] | None = None
         if uuid:
             for path in (f"/api/users/{uuid}",):
                 try:
-                    return await self._request("GET", path)
+                    direct_user = await self._request("GET", path)
+                    break
                 except ValueError:
                     continue
 
@@ -120,28 +122,34 @@ class VpnApiClient:
             if uuid and str(user.get("uuid") or "").strip() == uuid:
                 return user
             if telegram_id is not None and self._to_int(user.get("telegramId")) == int(telegram_id):
-                return user
+                return {**(direct_user or {}), **user}
             if username and str(user.get("username") or "").strip() == username:
-                return user
-        return None
+                return {**(direct_user or {}), **user}
+        return direct_user
 
     async def get_user_usage(self, *, uuid: str | None = None, telegram_id: int | None = None, username: str | None = None) -> dict[str, Any] | None:
         user = await self.find_user(uuid=uuid, telegram_id=telegram_id, username=username)
         if not user:
             return None
+        user_traffic = user.get("userTraffic") if isinstance(user.get("userTraffic"), dict) else {}
         used_bytes = self._to_int(
             user.get("trafficUsedBytes")
             or user.get("usedTrafficBytes")
             or user.get("usedTraffic")
+            or user_traffic.get("usedTrafficBytes")
+            or user_traffic.get("lifetimeUsedTrafficBytes")
         )
         limit_bytes = self._to_int(user.get("trafficLimitBytes") or user.get("limitTrafficBytes"))
         if used_bytes is None and limit_bytes is None:
             return None
+        connected_devices = await self._get_connected_devices(uuid or str(user.get("uuid") or "").strip())
         return {
             "current_usage_gb": self._bytes_to_gb(used_bytes),
             "usage_limit_gb": self._bytes_to_gb(limit_bytes),
             "device_limit": self._to_int(user.get("hwidDeviceLimit")),
             "last_user_agent": user.get("subLastUserAgent"),
+            "connected_devices_count": len(connected_devices) if connected_devices else None,
+            "connected_devices": connected_devices,
             "last_opened_at": user.get("subLastOpenedAt"),
         }
 
@@ -259,6 +267,96 @@ class VpnApiClient:
         if last_error is not None:
             raise last_error
         raise ValueError("VPN API request failed.")
+
+    async def _request_optional_json(self, method: str, path: str, *, params: dict[str, str] | None = None) -> Any | None:
+        url = self.config.base_url.rstrip("/") + "/" + path.lstrip("/")
+        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+        connector = aiohttp.TCPConnector(
+            ssl=self.config.verify_ssl,
+            family=socket.AF_INET if self.config.force_ipv4 else socket.AF_UNSPEC,
+            enable_cleanup_closed=True,
+        )
+        headers_candidates = self._build_headers_candidates(method)
+
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            for headers in headers_candidates:
+                try:
+                    async with session.request(method, url, headers=headers, params=params) as response:
+                        if response.status >= 400:
+                            continue
+                        ctype = (response.headers.get("Content-Type") or "").lower()
+                        if "application/json" not in ctype:
+                            return None
+                        return await response.json()
+                except aiohttp.ClientError:
+                    continue
+        return None
+
+    async def _get_connected_devices(self, uuid: str) -> list[str]:
+        uuid = str(uuid or "").strip()
+        if not uuid:
+            return []
+
+        attempts = (
+            ("/api/hwid-devices", {"userUuid": uuid}),
+            ("/api/hwid-devices", {"uuid": uuid}),
+            ("/api/hwid-devices/by-user", {"userUuid": uuid}),
+            (f"/api/hwid-devices/by-user/{uuid}", None),
+            (f"/api/users/{uuid}/hwid-devices", None),
+        )
+        for path, params in attempts:
+            payload = await self._request_optional_json("GET", path, params=params)
+            devices = self._extract_connected_devices(payload)
+            if devices:
+                return devices
+        return []
+
+    def _extract_connected_devices(self, payload: Any) -> list[str]:
+        if payload is None:
+            return []
+
+        candidates: list[Any] = []
+        if isinstance(payload, list):
+            candidates = payload
+        elif isinstance(payload, dict):
+            for key in ("response", "devices", "items", "data", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    candidates = value
+                    break
+                if isinstance(value, dict):
+                    for inner_key in ("devices", "items", "data", "results"):
+                        inner_value = value.get(inner_key)
+                        if isinstance(inner_value, list):
+                            candidates = inner_value
+                            break
+                    if candidates:
+                        break
+
+        result: list[str] = []
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            os_name = (
+                item.get("deviceOs")
+                or item.get("xDeviceOs")
+                or item.get("os")
+                or item.get("platform")
+            )
+            model_name = (
+                item.get("deviceModel")
+                or item.get("xDeviceModel")
+                or item.get("model")
+                or item.get("deviceName")
+                or item.get("name")
+            )
+            if not os_name and not model_name:
+                continue
+            parts = [str(part).strip() for part in (os_name, model_name) if str(part or "").strip()]
+            label = " - ".join(parts)
+            if label:
+                result.append(label)
+        return result
 
     async def _list_users(self) -> list[dict[str, Any]]:
         for path in ("/api/users",):

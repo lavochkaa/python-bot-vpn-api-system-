@@ -36,6 +36,39 @@ def _guess_device_entry(last_user_agent: str | None) -> tuple[int | None, list[s
     return 1, [ua[:48]]
 
 
+def _resolve_device_entries(usage_info: dict | None) -> tuple[int | None, list[str]]:
+    if not usage_info:
+        return None, []
+
+    raw_devices = usage_info.get("connected_devices")
+    if isinstance(raw_devices, list):
+        device_lines: list[str] = []
+        seen: set[str] = set()
+        for item in raw_devices:
+            label = str(item or "").strip()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            device_lines.append(label)
+        if device_lines:
+            raw_count = usage_info.get("connected_devices_count")
+            try:
+                connected_count = int(raw_count) if raw_count is not None else len(device_lines)
+            except (TypeError, ValueError):
+                connected_count = len(device_lines)
+            return connected_count, device_lines
+
+    raw_count = usage_info.get("connected_devices_count")
+    try:
+        connected_count = int(raw_count) if raw_count is not None else None
+    except (TypeError, ValueError):
+        connected_count = None
+    if connected_count is not None:
+        return connected_count, []
+
+    return _guess_device_entry(usage_info.get("last_user_agent"))
+
+
 def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | None) -> tuple[str, float | None, int | None]:
     now = datetime.now(timezone.utc)
     expires = usage_info.get("expire_at") if usage_info else None
@@ -66,7 +99,7 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
     if device_limit is None:
         device_limit = 2
 
-    connected_count, device_lines = _guess_device_entry(usage_info.get("last_user_agent") if usage_info else None)
+    connected_count, device_lines = _resolve_device_entries(usage_info)
     devices_title = f"{connected_count if connected_count is not None else '—'} / {device_limit}"
     devices_block = ""
     if device_lines:
