@@ -1,4 +1,5 @@
 import logging
+import re
 import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -143,7 +144,7 @@ class VpnApiClient:
         return {
             "current_usage_gb": self._bytes_to_gb(used_bytes),
             "usage_limit_gb": self._bytes_to_gb(limit_bytes),
-            "device_limit": self._to_int(user.get("hwidDeviceLimit")),
+            "device_limit": self._extract_device_limit(user),
             "last_user_agent": user.get("subLastUserAgent"),
             "connected_devices_count": connected_devices_count,
             "connected_devices": connected_devices,
@@ -551,27 +552,43 @@ class VpnApiClient:
             user.get("currentUsageBytes"),
             user.get("totalUsedBytes"),
             user.get("trafficUsageBytes"),
+            user.get("usedTrafficHuman"),
+            user.get("trafficUsed"),
+            user.get("trafficUsedHuman"),
+            user.get("currentUsage"),
             user_traffic.get("usedTrafficBytes"),
             user_traffic.get("lifetimeUsedTrafficBytes"),
             user_traffic.get("currentUsageBytes"),
             user_traffic.get("totalUsedBytes"),
+            user_traffic.get("usedTraffic"),
+            user_traffic.get("usedTrafficHuman"),
+            user_traffic.get("currentUsage"),
+            user_traffic.get("lifetimeUsedTraffic"),
         )
         for value in candidates:
-            parsed = self._to_int(value)
+            parsed = self._parse_size_to_bytes(value)
             if parsed is not None:
                 return parsed
 
-        uploaded = self._to_int(
+        uploaded = self._parse_size_to_bytes(
             user.get("uploadBytes")
             or user.get("uploadedBytes")
+            or user.get("upload")
+            or user.get("uploaded")
             or user_traffic.get("uploadBytes")
             or user_traffic.get("uploadedBytes")
+            or user_traffic.get("upload")
+            or user_traffic.get("uploaded")
         )
-        downloaded = self._to_int(
+        downloaded = self._parse_size_to_bytes(
             user.get("downloadBytes")
             or user.get("downloadedBytes")
+            or user.get("download")
+            or user.get("downloaded")
             or user_traffic.get("downloadBytes")
             or user_traffic.get("downloadedBytes")
+            or user_traffic.get("download")
+            or user_traffic.get("downloaded")
         )
         if uploaded is not None or downloaded is not None:
             return int(uploaded or 0) + int(downloaded or 0)
@@ -583,8 +600,30 @@ class VpnApiClient:
             user.get("limitTrafficBytes"),
             user.get("trafficBytes"),
             user.get("traffic"),
+            user.get("trafficLimit"),
+            user.get("trafficLimitHuman"),
+            user.get("lifetimeTraffic"),
             user_traffic.get("trafficLimitBytes"),
             user_traffic.get("limitTrafficBytes"),
+            user_traffic.get("trafficLimit"),
+            user_traffic.get("trafficLimitHuman"),
+            user_traffic.get("lifetimeTraffic"),
+        ):
+            parsed = self._parse_size_to_bytes(value)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _extract_device_limit(self, user: dict[str, Any]) -> int | None:
+        user_traffic = user.get("userTraffic") if isinstance(user.get("userTraffic"), dict) else {}
+        for value in (
+            user.get("hwidDeviceLimit"),
+            user.get("deviceLimit"),
+            user.get("devicesLimit"),
+            user.get("maxDevices"),
+            user.get("hwid_limit"),
+            user_traffic.get("hwidDeviceLimit"),
+            user_traffic.get("deviceLimit"),
         ):
             parsed = self._to_int(value)
             if parsed is not None:
@@ -608,6 +647,46 @@ class VpnApiClient:
         if value is None:
             return None
         return round(value / (1024 * 1024 * 1024), 2)
+
+    def _parse_size_to_bytes(self, value: Any) -> int | None:
+        direct = self._to_int(value)
+        if direct is not None:
+            return direct
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        match = re.search(r"([0-9]+(?:[.,][0-9]+)?)\s*([kmgtpe]?i?b)?", text, re.IGNORECASE)
+        if not match:
+            return None
+
+        number_raw = match.group(1).replace(",", ".")
+        unit_raw = (match.group(2) or "b").lower()
+        try:
+            number = float(number_raw)
+        except ValueError:
+            return None
+
+        multipliers = {
+            "b": 1,
+            "kb": 1000,
+            "mb": 1000 ** 2,
+            "gb": 1000 ** 3,
+            "tb": 1000 ** 4,
+            "pb": 1000 ** 5,
+            "kib": 1024,
+            "mib": 1024 ** 2,
+            "gib": 1024 ** 3,
+            "tib": 1024 ** 4,
+            "pib": 1024 ** 5,
+        }
+        multiplier = multipliers.get(unit_raw)
+        if multiplier is None:
+            return None
+        return int(number * multiplier)
 
     def _to_int(self, value: Any) -> int | None:
         if value is None or value == "":
