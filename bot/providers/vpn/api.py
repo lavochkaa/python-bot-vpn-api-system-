@@ -24,12 +24,22 @@ class ApiVpnKeyProvider(VpnKeyProvider):
     ) -> VpnKeyData:
         days = int(duration_days or 30)
         traffic = int(traffic_gb or 50)
-        payload = await self.client.create_subscription(user_id=user_id, days=days, traffic_gb=traffic)
+        username = f"tg_{user_id}"
+        payload = await self.client.create_or_update_subscription(
+            user_id=user_id,
+            username=username,
+            days=days,
+            traffic_gb=traffic,
+            device_limit=max(0, int(settings.vpn_api_hwid_device_limit or 3)),
+            traffic_reset_strategy=(settings.vpn_api_traffic_reset_strategy or "NO_RESET").strip().upper(),
+        )
         key = (
-            payload.get("key")
-            or payload.get("subscription_url")
-            or payload.get("url")
-            or payload.get("link")
+            self.client.build_subscription_url(payload)
+            or settings.vpn_api_subscription_url_template.format(
+                short_uuid=payload.get("shortUuid", ""),
+                user_uuid=payload.get("uuid", ""),
+                username=payload.get("username", username),
+            )
         )
         if not key:
             raise ValueError("VPN API returned no key.")
@@ -45,5 +55,24 @@ class ApiVpnKeyProvider(VpnKeyProvider):
         subscription_uuid: str | None = None,
         provider_subscription_id: str | None = None,
     ) -> bool:
-        _ = (user_id, subscription_uuid, provider_subscription_id)
-        return False
+        target_uuid = provider_subscription_id or subscription_uuid
+        if not target_uuid:
+            existing = await self.client.find_user(telegram_id=user_id, username=f"tg_{user_id}")
+            target_uuid = str(existing.get("uuid") or "") if existing else None
+        if not target_uuid:
+            return False
+        return await self.client.reset_user_traffic(str(target_uuid))
+
+    async def get_user_usage(
+        self,
+        *,
+        user_id: int,
+        subscription_uuid: str | None = None,
+        provider_subscription_id: str | None = None,
+    ) -> dict | None:
+        target_uuid = provider_subscription_id or subscription_uuid
+        return await self.client.get_user_usage(
+            uuid=target_uuid,
+            telegram_id=None if target_uuid else user_id,
+            username=None if target_uuid else f"tg_{user_id}",
+        )

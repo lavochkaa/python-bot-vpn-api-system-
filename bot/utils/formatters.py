@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,38 @@ class MainMenuSnapshot:
     text: str
     remaining_gb: float | None
     remaining_days: int | None
+
+
+_USAGE_CACHE_TTL_SECONDS = 30.0
+_USAGE_CACHE: dict[tuple[int, str], tuple[float, dict | None]] = {}
+
+
+def _usage_cache_key(user: User, sub: Subscription) -> tuple[int, str]:
+    provider_ref = (
+        sub.provider_subscription_id
+        or user.subscription_uuid
+        or f"sub:{sub.id}"
+    )
+    return user.id, str(provider_ref)
+
+
+def _get_cached_usage(user: User, sub: Subscription) -> dict | None:
+    key = _usage_cache_key(user, sub)
+    cached = _USAGE_CACHE.get(key)
+    if not cached:
+        return None
+    expires_at, payload = cached
+    if expires_at <= time.monotonic():
+        _USAGE_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _store_cached_usage(user: User, sub: Subscription, usage_info: dict | None) -> None:
+    _USAGE_CACHE[_usage_cache_key(user, sub)] = (
+        time.monotonic() + _USAGE_CACHE_TTL_SECONDS,
+        usage_info,
+    )
 
 
 async def format_main_menu(user: User, session: AsyncSession) -> str:
@@ -30,18 +63,21 @@ async def build_main_menu_snapshot(
     sub = await SubscriptionRepository(session).get_active(user.id)
     usage_info: dict | None = None
     if sub and include_live_usage:
-        provider = build_vpn_provider()
-        try:
-            usage_info = await asyncio.wait_for(
-                provider.get_user_usage(
-                    user_id=user.id,
-                    subscription_uuid=user.subscription_uuid,
-                    provider_subscription_id=sub.provider_subscription_id,
-                ),
-                timeout=usage_timeout_seconds,
-            )
-        except Exception:
-            usage_info = None
+        usage_info = _get_cached_usage(user, sub)
+        if usage_info is None:
+            provider = build_vpn_provider()
+            try:
+                usage_info = await asyncio.wait_for(
+                    provider.get_user_usage(
+                        user_id=user.id,
+                        subscription_uuid=user.subscription_uuid,
+                        provider_subscription_id=sub.provider_subscription_id,
+                    ),
+                    timeout=usage_timeout_seconds,
+                )
+            except Exception:
+                usage_info = None
+            _store_cached_usage(user, sub, usage_info)
     sub_info, remaining_gb, remaining_days = await format_subscription_for_user(
         sub,
         show_type=False,

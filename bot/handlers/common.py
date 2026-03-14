@@ -93,7 +93,7 @@ async def _handle_start(message: Message, session: AsyncSession, state: FSMConte
         full_name=message.from_user.full_name,
     )
     try:
-        snapshot = await build_main_menu_snapshot(user, session, include_live_usage=False)
+        snapshot = await build_main_menu_snapshot(user, session)
         await send_or_answer_banner(
             message,
             snapshot.text,

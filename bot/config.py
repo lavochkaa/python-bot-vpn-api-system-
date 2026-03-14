@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     vpn_api_key: str = ""
     vpn_api_timeout_seconds: int = 20
     vpn_api_verify_ssl: bool = True
+    vpn_api_subscription_url_template: str = ""
+    vpn_api_traffic_reset_strategy: str = "NO_RESET"
+    vpn_api_hwid_device_limit: int = 3
     hiddify_admin_link: str = ""
     hiddify_api_key: str = ""
     hiddify_verify_ssl: bool = False

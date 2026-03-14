@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -24,23 +25,139 @@ class VpnApiClient:
             raise ValueError("VPN_API_KEY is not configured.")
         self.config = config
 
-    async def create_subscription(self, user_id: int, days: int, traffic_gb: int) -> dict[str, Any]:
-        payload = {
-            "user_id": user_id,
-            "days": days,
-            "traffic_gb": traffic_gb,
-        }
-        return await self._request("POST", "/subscriptions", json=payload)
+    async def create_or_update_subscription(
+        self,
+        *,
+        user_id: int,
+        username: str,
+        days: int,
+        traffic_gb: int,
+        device_limit: int,
+        traffic_reset_strategy: str,
+    ) -> dict[str, Any]:
+        existing = await self.find_user(telegram_id=user_id, username=username)
+        now = datetime.now(timezone.utc)
+        expire_at = now + timedelta(days=days)
+        traffic_limit_bytes = self._gb_to_bytes(traffic_gb)
 
-    async def extend_subscription(self, subscription_id: str, days: int, traffic_gb: int) -> dict[str, Any]:
-        payload = {
-            "days": days,
-            "traffic_gb": traffic_gb,
-        }
-        return await self._request("POST", f"/subscriptions/{subscription_id}/extend", json=payload)
+        if existing:
+            current_expire = self._parse_datetime(
+                existing.get("expireAt")
+                or existing.get("expiresAt")
+                or existing.get("expire_at")
+            )
+            used_bytes = self._to_int(
+                existing.get("trafficUsedBytes")
+                or existing.get("usedTrafficBytes")
+                or existing.get("usedTraffic")
+            ) or 0
+            if current_expire and current_expire > now:
+                expire_at = current_expire + timedelta(days=days)
+            traffic_limit_bytes = used_bytes + traffic_limit_bytes
+            payload = {
+                "uuid": existing.get("uuid"),
+                "username": existing.get("username") or username,
+                "status": "ACTIVE",
+                "trafficLimitBytes": traffic_limit_bytes,
+                "trafficLimitStrategy": traffic_reset_strategy,
+                "expireAt": expire_at.isoformat(),
+                "telegramId": user_id,
+                "hwidDeviceLimit": device_limit,
+            }
+            return await self._request_with_fallback(
+                "PUT",
+                ("/users", "/api/users"),
+                json=payload,
+            )
 
-    async def get_subscription(self, subscription_id: str) -> dict[str, Any]:
-        return await self._request("GET", f"/subscriptions/{subscription_id}")
+        payload = {
+            "username": username,
+            "status": "ACTIVE",
+            "trafficLimitBytes": traffic_limit_bytes,
+            "trafficLimitStrategy": traffic_reset_strategy,
+            "expireAt": expire_at.isoformat(),
+            "telegramId": user_id,
+            "hwidDeviceLimit": device_limit,
+        }
+        return await self._request_with_fallback(
+            "POST",
+            ("/users", "/api/users"),
+            json=payload,
+        )
+
+    async def find_user(
+        self,
+        *,
+        telegram_id: int | None = None,
+        username: str | None = None,
+        uuid: str | None = None,
+    ) -> dict[str, Any] | None:
+        if uuid:
+            for path in (
+                f"/users/{uuid}",
+                f"/users/by-uuid/{uuid}",
+                f"/api/users/{uuid}",
+                f"/api/users/by-uuid/{uuid}",
+            ):
+                try:
+                    return await self._request("GET", path)
+                except ValueError:
+                    continue
+
+        users = await self._list_users()
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            if uuid and str(user.get("uuid") or "").strip() == uuid:
+                return user
+            if telegram_id is not None and self._to_int(user.get("telegramId")) == int(telegram_id):
+                return user
+            if username and str(user.get("username") or "").strip() == username:
+                return user
+        return None
+
+    async def get_user_usage(self, *, uuid: str | None = None, telegram_id: int | None = None, username: str | None = None) -> dict[str, Any] | None:
+        user = await self.find_user(uuid=uuid, telegram_id=telegram_id, username=username)
+        if not user:
+            return None
+        used_bytes = self._to_int(
+            user.get("trafficUsedBytes")
+            or user.get("usedTrafficBytes")
+            or user.get("usedTraffic")
+        )
+        limit_bytes = self._to_int(user.get("trafficLimitBytes") or user.get("limitTrafficBytes"))
+        if used_bytes is None and limit_bytes is None:
+            return None
+        return {
+            "current_usage_gb": self._bytes_to_gb(used_bytes),
+            "usage_limit_gb": self._bytes_to_gb(limit_bytes),
+        }
+
+    async def reset_user_traffic(self, uuid: str) -> bool:
+        for method, path in (
+            ("POST", f"/users/{uuid}/reset-traffic"),
+            ("POST", f"/api/users/{uuid}/reset-traffic"),
+            ("POST", f"/users/reset-traffic/{uuid}"),
+            ("POST", f"/api/users/reset-traffic/{uuid}"),
+        ):
+            try:
+                await self._request(method, path)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def build_subscription_url(self, payload: dict[str, Any]) -> str | None:
+        direct = (
+            payload.get("subscriptionUrl")
+            or payload.get("subscriptionURL")
+            or payload.get("subscription_url")
+            or payload.get("url")
+            or payload.get("link")
+        )
+        if direct:
+            return str(direct)
+        return None
 
     async def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
         url = self.config.base_url.rstrip("/") + "/" + path.lstrip("/")
@@ -60,8 +177,71 @@ class VpnApiClient:
                         raise ValueError(f"VPN API error: HTTP {response.status}")
                     ctype = (response.headers.get("Content-Type") or "").lower()
                     if "application/json" in ctype:
-                        return await response.json()
+                        data = await response.json()
+                        return self._unwrap_response(data)
                     return {"raw": text}
         except aiohttp.ClientError as exc:
             logger.exception("VPN API request failed %s %s", method, url)
             raise ValueError("VPN API is unavailable.") from exc
+
+    async def _request_with_fallback(
+        self,
+        method: str,
+        paths: tuple[str, ...],
+        *,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        last_error: ValueError | None = None
+        for path in paths:
+            try:
+                return await self._request(method, path, json=json)
+            except ValueError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise ValueError("VPN API request failed.")
+
+    async def _list_users(self) -> list[dict[str, Any]]:
+        for path in ("/users", "/api/users"):
+            try:
+                data = await self._request("GET", path)
+            except ValueError:
+                continue
+            users = data.get("users") if isinstance(data, dict) else None
+            if isinstance(users, list):
+                return [item for item in users if isinstance(item, dict)]
+            if isinstance(data, list):
+                return [item for item in data if isinstance(item, dict)]
+        return []
+
+    def _unwrap_response(self, data: Any) -> dict[str, Any]:
+        if isinstance(data, dict) and isinstance(data.get("response"), dict):
+            return data["response"]
+        if isinstance(data, dict):
+            return data
+        return {"raw": data}
+
+    def _gb_to_bytes(self, traffic_gb: int) -> int:
+        return int(traffic_gb) * 1024 * 1024 * 1024
+
+    def _bytes_to_gb(self, value: int | None) -> float | None:
+        if value is None:
+            return None
+        return round(value / (1024 * 1024 * 1024), 2)
+
+    def _to_int(self, value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_datetime(self, value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+        except ValueError:
+            return None
