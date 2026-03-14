@@ -120,11 +120,11 @@ class VpnApiClient:
             if not isinstance(user, dict):
                 continue
             if uuid and str(user.get("uuid") or "").strip() == uuid:
-                return {**(direct_user or {}), **user}
+                return self._merge_user_payloads(direct_user, user)
             if telegram_id is not None and self._to_int(user.get("telegramId")) == int(telegram_id):
-                return {**(direct_user or {}), **user}
+                return self._merge_user_payloads(direct_user, user)
             if username and str(user.get("username") or "").strip() == username:
-                return {**(direct_user or {}), **user}
+                return self._merge_user_payloads(direct_user, user)
         return direct_user
 
     async def get_user_usage(self, *, uuid: str | None = None, telegram_id: int | None = None, username: str | None = None) -> dict[str, Any] | None:
@@ -132,19 +132,13 @@ class VpnApiClient:
         if not user:
             return None
         user_traffic = user.get("userTraffic") if isinstance(user.get("userTraffic"), dict) else {}
-        used_bytes = self._to_int(
-            user.get("trafficUsedBytes")
-            or user.get("usedTrafficBytes")
-            or user.get("usedTraffic")
-            or user_traffic.get("usedTrafficBytes")
-            or user_traffic.get("lifetimeUsedTrafficBytes")
-        )
-        limit_bytes = self._to_int(user.get("trafficLimitBytes") or user.get("limitTrafficBytes"))
+        used_bytes = self._extract_used_bytes(user, user_traffic)
+        limit_bytes = self._extract_limit_bytes(user, user_traffic)
         if used_bytes is None and limit_bytes is None:
             return None
         connected_devices = await self._get_connected_devices(user)
         connected_devices_count = self._extract_device_count(user)
-        if connected_devices and connected_devices_count is None:
+        if connected_devices_count is None and connected_devices:
             connected_devices_count = len(connected_devices)
         return {
             "current_usage_gb": self._bytes_to_gb(used_bytes),
@@ -520,6 +514,82 @@ class VpnApiClient:
         if isinstance(data, dict):
             return data
         return {"raw": data}
+
+    def _merge_user_payloads(
+        self,
+        primary: dict[str, Any] | None,
+        secondary: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not primary:
+            return secondary
+        if not secondary:
+            return primary
+
+        merged = dict(secondary)
+        for key, value in primary.items():
+            if isinstance(value, dict) and isinstance(secondary.get(key), dict):
+                merged[key] = self._merge_user_payloads(value, secondary.get(key))
+                continue
+            if self._has_meaningful_value(value):
+                merged[key] = value
+        return merged
+
+    def _has_meaningful_value(self, value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return value.strip() != ""
+        if isinstance(value, (list, tuple, set, dict)):
+            return len(value) > 0
+        return True
+
+    def _extract_used_bytes(self, user: dict[str, Any], user_traffic: dict[str, Any]) -> int | None:
+        candidates = (
+            user.get("trafficUsedBytes"),
+            user.get("usedTrafficBytes"),
+            user.get("usedTraffic"),
+            user.get("currentUsageBytes"),
+            user.get("totalUsedBytes"),
+            user.get("trafficUsageBytes"),
+            user_traffic.get("usedTrafficBytes"),
+            user_traffic.get("lifetimeUsedTrafficBytes"),
+            user_traffic.get("currentUsageBytes"),
+            user_traffic.get("totalUsedBytes"),
+        )
+        for value in candidates:
+            parsed = self._to_int(value)
+            if parsed is not None:
+                return parsed
+
+        uploaded = self._to_int(
+            user.get("uploadBytes")
+            or user.get("uploadedBytes")
+            or user_traffic.get("uploadBytes")
+            or user_traffic.get("uploadedBytes")
+        )
+        downloaded = self._to_int(
+            user.get("downloadBytes")
+            or user.get("downloadedBytes")
+            or user_traffic.get("downloadBytes")
+            or user_traffic.get("downloadedBytes")
+        )
+        if uploaded is not None or downloaded is not None:
+            return int(uploaded or 0) + int(downloaded or 0)
+        return None
+
+    def _extract_limit_bytes(self, user: dict[str, Any], user_traffic: dict[str, Any]) -> int | None:
+        for value in (
+            user.get("trafficLimitBytes"),
+            user.get("limitTrafficBytes"),
+            user.get("trafficBytes"),
+            user.get("traffic"),
+            user_traffic.get("trafficLimitBytes"),
+            user_traffic.get("limitTrafficBytes"),
+        ):
+            parsed = self._to_int(value)
+            if parsed is not None:
+                return parsed
+        return None
 
     def _gb_to_bytes(self, traffic_gb: int) -> int:
         return int(traffic_gb) * 1024 * 1024 * 1024
