@@ -49,6 +49,7 @@ class VpnApiClient:
         traffic_limit_bytes = self._gb_to_bytes(traffic_gb)
 
         if existing:
+            existing_uuid = str(existing.get("uuid") or "").strip()
             current_expire = self._parse_datetime(
                 existing.get("expireAt")
                 or existing.get("expiresAt")
@@ -63,7 +64,7 @@ class VpnApiClient:
                 expire_at = current_expire + timedelta(days=days)
             traffic_limit_bytes = used_bytes + traffic_limit_bytes
             payload = {
-                "uuid": existing.get("uuid"),
+                "uuid": existing_uuid,
                 "username": existing.get("username") or username,
                 "status": "ACTIVE",
                 "trafficLimitBytes": traffic_limit_bytes,
@@ -72,11 +73,13 @@ class VpnApiClient:
                 "telegramId": user_id,
                 "hwidDeviceLimit": device_limit,
             }
-            return await self._request_with_fallback(
-                "PUT",
-                ("/users", "/api/users"),
-                json=payload,
+            update_attempts: tuple[tuple[str, str], ...] = (
+                ("PATCH", f"/api/users/{existing_uuid}"),
+                ("PUT", f"/api/users/{existing_uuid}"),
+                ("PATCH", "/api/users"),
+                ("PUT", "/api/users"),
             )
+            return await self._request_method_path_fallback(update_attempts, json=payload)
 
         payload = {
             "username": username,
@@ -225,6 +228,23 @@ class VpnApiClient:
     ) -> dict[str, Any]:
         last_error: ValueError | None = None
         for path in paths:
+            try:
+                return await self._request(method, path, json=json)
+            except ValueError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise ValueError("VPN API request failed.")
+
+    async def _request_method_path_fallback(
+        self,
+        attempts: tuple[tuple[str, str], ...],
+        *,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        last_error: ValueError | None = None
+        for method, path in attempts:
             try:
                 return await self._request(method, path, json=json)
             except ValueError as exc:
