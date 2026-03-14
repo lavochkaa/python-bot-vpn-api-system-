@@ -36,6 +36,15 @@ def _guess_device_entry(last_user_agent: str | None) -> tuple[int | None, list[s
     return 1, [ua[:48]]
 
 
+def _escape_code(value: str) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _resolve_device_entries(usage_info: dict | None) -> tuple[int | None, list[str]]:
     if not usage_info:
         return None, []
@@ -103,14 +112,16 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
     devices_title = f"{connected_count if connected_count is not None else '—'} / {device_limit}"
     devices_block = ""
     if device_lines:
-        devices_block = "\n📱 <b>Подключенные устройства:</b>\n" + "\n".join(f"• {line}" for line in device_lines)
+        devices_block = "\n📱 <b>Подключенные устройства:</b>\n" + "\n".join(
+            f"• <code>{_escape_code(line)}</code>" for line in device_lines
+        )
 
     expires_title = expires.strftime("%d.%m.%Y %H:%M") if expires else "—"
     text = (
         "📦 <b>Текущая подписка</b>\n\n"
         f"Трафик: <b>{_format_gb(used_gb)} / {_format_gb(total_gb)} ГБ</b>\n"
         f"Действует до: <b>{expires_title}</b>\n"
-        f"Устройства: <b>{devices_title}</b>"
+        f"Устройства: <code>{_escape_code(devices_title)}</code>"
         f"{devices_block}"
     )
     return text, remaining_gb, remaining_days

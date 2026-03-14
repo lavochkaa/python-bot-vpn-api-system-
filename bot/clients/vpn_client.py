@@ -120,7 +120,7 @@ class VpnApiClient:
             if not isinstance(user, dict):
                 continue
             if uuid and str(user.get("uuid") or "").strip() == uuid:
-                return user
+                return {**(direct_user or {}), **user}
             if telegram_id is not None and self._to_int(user.get("telegramId")) == int(telegram_id):
                 return {**(direct_user or {}), **user}
             if username and str(user.get("username") or "").strip() == username:
@@ -142,7 +142,7 @@ class VpnApiClient:
         limit_bytes = self._to_int(user.get("trafficLimitBytes") or user.get("limitTrafficBytes"))
         if used_bytes is None and limit_bytes is None:
             return None
-        connected_devices = await self._get_connected_devices(uuid or str(user.get("uuid") or "").strip())
+        connected_devices = await self._get_connected_devices(user)
         return {
             "current_usage_gb": self._bytes_to_gb(used_bytes),
             "usage_limit_gb": self._bytes_to_gb(limit_bytes),
@@ -292,18 +292,35 @@ class VpnApiClient:
                     continue
         return None
 
-    async def _get_connected_devices(self, uuid: str) -> list[str]:
-        uuid = str(uuid or "").strip()
-        if not uuid:
+    async def _get_connected_devices(self, user: dict[str, Any]) -> list[str]:
+        uuid = str(user.get("uuid") or "").strip()
+        user_id = str(user.get("id") or "").strip()
+        if not uuid and not user_id:
             return []
 
-        attempts = (
-            ("/api/hwid-devices", {"userUuid": uuid}),
-            ("/api/hwid-devices", {"uuid": uuid}),
-            ("/api/hwid-devices/by-user", {"userUuid": uuid}),
-            (f"/api/hwid-devices/by-user/{uuid}", None),
-            (f"/api/users/{uuid}/hwid-devices", None),
-        )
+        attempts: list[tuple[str, dict[str, str] | None]] = []
+        if uuid:
+            attempts.extend(
+                [
+                    ("/api/hwid-devices", {"userUuid": uuid}),
+                    ("/api/hwid-devices", {"uuid": uuid}),
+                    ("/api/hwid-devices", {"ownerUuid": uuid}),
+                    ("/api/hwid-devices/by-user", {"userUuid": uuid}),
+                    (f"/api/hwid-devices/by-user/{uuid}", None),
+                    (f"/api/users/{uuid}/hwid-devices", None),
+                ]
+            )
+        if user_id:
+            attempts.extend(
+                [
+                    ("/api/hwid-devices", {"userId": user_id}),
+                    ("/api/hwid-devices", {"user_id": user_id}),
+                    ("/api/hwid-devices", {"ownerId": user_id}),
+                    ("/api/hwid-devices/by-user", {"userId": user_id}),
+                    (f"/api/hwid-devices/by-user/{user_id}", None),
+                    (f"/api/users/{user_id}/hwid-devices", None),
+                ]
+            )
         for path, params in attempts:
             payload = await self._request_optional_json("GET", path, params=params)
             devices = self._extract_connected_devices(payload)
@@ -337,11 +354,16 @@ class VpnApiClient:
         for item in candidates:
             if not isinstance(item, dict):
                 continue
+            device_info = item.get("deviceInfo") if isinstance(item.get("deviceInfo"), dict) else {}
             os_name = (
                 item.get("deviceOs")
                 or item.get("xDeviceOs")
                 or item.get("os")
                 or item.get("platform")
+                or item.get("clientType")
+                or item.get("device_type")
+                or device_info.get("os")
+                or device_info.get("platform")
             )
             model_name = (
                 item.get("deviceModel")
@@ -349,6 +371,11 @@ class VpnApiClient:
                 or item.get("model")
                 or item.get("deviceName")
                 or item.get("name")
+                or item.get("friendlyName")
+                or item.get("clientName")
+                or item.get("hwid")
+                or device_info.get("model")
+                or device_info.get("name")
             )
             if not os_name and not model_name:
                 continue
@@ -356,7 +383,7 @@ class VpnApiClient:
             label = " - ".join(parts)
             if label:
                 result.append(label)
-        return result
+        return list(dict.fromkeys(result))
 
     async def _list_users(self) -> list[dict[str, Any]]:
         for path in ("/api/users",):
