@@ -32,7 +32,13 @@ async def _safe_edit_text(call: CallbackQuery, text: str, reply_markup) -> None:
             banner_path=settings.message_banner_main_path,
         )
     except TelegramBadRequest:
-        pass
+        if call.message is not None:
+            await send_or_answer_banner(
+                call.message,
+                text,
+                reply_markup=reply_markup,
+                banner_path=settings.message_banner_main_path,
+            )
 
 
 async def _maybe_send_subscription_warning(target: Message, *, remaining_gb: float | None, remaining_days: int | None) -> None:
