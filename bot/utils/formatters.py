@@ -1,7 +1,10 @@
 import asyncio
 import time
+import re
 from datetime import datetime, timezone
 from dataclasses import dataclass
+
+import aiohttp
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.db.models import User, Subscription
 from bot.providers.vpn.factory import build_vpn_provider
@@ -113,6 +116,72 @@ def invalidate_usage_cache(user: User, sub: Subscription | None) -> None:
     _USAGE_CACHE.pop(_usage_cache_key(user, sub), None)
 
 
+def _merge_usage_info(primary: dict | None, fallback: dict | None) -> dict | None:
+    if not primary:
+        return fallback
+    if not fallback:
+        return primary
+
+    merged = dict(fallback)
+    for key, value in primary.items():
+        if value is not None:
+            merged[key] = value
+    return merged
+
+
+def _parse_subscription_userinfo(value: str | None) -> dict | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    pairs = dict(re.findall(r"([a-zA-Z_]+)=([0-9]+)", text))
+    upload = int(pairs.get("upload", "0"))
+    download = int(pairs.get("download", "0"))
+    total = pairs.get("total")
+    expire = pairs.get("expire")
+
+    used_bytes = upload + download
+    total_bytes = int(total) if total is not None else None
+    expire_at = None
+    if expire and expire.isdigit():
+        expire_at = datetime.fromtimestamp(int(expire), tz=timezone.utc)
+
+    return {
+        "current_usage_gb": round(used_bytes / (1024 * 1024 * 1024), 2),
+        "usage_limit_gb": round(total_bytes / (1024 * 1024 * 1024), 2) if total_bytes is not None else None,
+        "expire_at": expire_at,
+    }
+
+
+async def _fetch_subscription_usage_fallback(
+    user: User,
+    sub: Subscription,
+    session: AsyncSession,
+    *,
+    timeout_seconds: float,
+) -> dict | None:
+    from bot.repositories.vpn_key import VpnKeyRepository
+
+    keys = await VpnKeyRepository(session).get_user_keys(user.id, limit=1)
+    if not keys:
+        return None
+    key_url = str(keys[0].key or "").strip()
+    if not key_url.startswith(("http://", "https://")):
+        return None
+
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    async with aiohttp.ClientSession(timeout=timeout) as client:
+        try:
+            async with client.get(key_url, allow_redirects=True) as response:
+                header = (
+                    response.headers.get("subscription-userinfo")
+                    or response.headers.get("Subscription-Userinfo")
+                )
+                return _parse_subscription_userinfo(header)
+        except Exception:
+            return None
+
+
 async def format_main_menu(user: User, session: AsyncSession) -> str:
     snapshot = await build_main_menu_snapshot(user, session)
     return snapshot.text
@@ -144,6 +213,13 @@ async def build_main_menu_snapshot(
                 )
             except Exception:
                 usage_info = None
+            fallback_usage = await _fetch_subscription_usage_fallback(
+                user,
+                sub,
+                session,
+                timeout_seconds=usage_timeout_seconds,
+            )
+            usage_info = _merge_usage_info(usage_info, fallback_usage)
             _store_cached_usage(user, sub, usage_info)
     if sub:
         subscription_block, remaining_gb, remaining_days = _build_main_menu_subscription_block(sub, usage_info)
