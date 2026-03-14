@@ -101,7 +101,7 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
     devices_block = ""
     if connected_devices:
         devices_block = "\n📱 <b>Подключенные устройства:</b>\n" + "\n".join(
-            f"• <b>{_escape_html(device)}</b>" for device in connected_devices
+            f"<code>{_escape_html(device)}</code>" for device in connected_devices
         )
 
     expires_title = expires.strftime("%d.%m.%Y %H:%M") if expires else "—"
