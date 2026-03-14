@@ -25,8 +25,10 @@ class HiddifyVpnKeyProvider(VpnKeyProvider):
         plan_slug: str,
         traffic_gb: int | None = None,
         duration_days: int | None = None,
+        device_limit: int | None = None,
         build_preset: str | None = None,
     ) -> VpnKeyData:
+        _ = device_limit
         api_base, api_key = self._resolve_api_access()
         payload_variants = self._build_payload_variants(
             user_id=user_id,

@@ -21,6 +21,7 @@ class ApiVpnKeyProvider(VpnKeyProvider):
         plan_slug: str,
         traffic_gb: int | None = None,
         duration_days: int | None = None,
+        device_limit: int | None = None,
         build_preset: str | None = None,
     ) -> VpnKeyData:
         days = int(duration_days or 30)
@@ -31,8 +32,8 @@ class ApiVpnKeyProvider(VpnKeyProvider):
             username=username,
             days=days,
             traffic_gb=traffic,
-            device_limit=max(0, int(settings.vpn_api_hwid_device_limit or 3)),
-            traffic_reset_strategy=(settings.vpn_api_traffic_reset_strategy or "NO_RESET").strip().upper(),
+            device_limit=max(0, int(device_limit or settings.vpn_api_hwid_device_limit or 3)),
+            traffic_reset_strategy="MONTH",
             internal_squad_uuid=(settings.vpn_api_internal_squad_uuid or "").strip() or None,
         )
         key = (

@@ -26,6 +26,12 @@ SUBSCRIPTION_PRICE_MATRIX: dict[tuple[int, int], Decimal] = {
 
 DURATION_OPTIONS: tuple[int, ...] = (30, 90, 180, 365)
 TRAFFIC_OPTIONS: tuple[int, ...] = (50, 150, 500)
+DEVICE_LIMIT_OPTIONS: tuple[int, ...] = (3, 5, 10)
+DEVICE_LIMIT_PRICE_MULTIPLIERS: dict[int, Decimal] = {
+    3: Decimal("1.00"),
+    5: Decimal("1.25"),
+    10: Decimal("1.50"),
+}
 
 # UI-facing constructor options in months.
 DURATION_MONTH_OPTIONS: tuple[int, ...] = (1, 3, 6, 12)

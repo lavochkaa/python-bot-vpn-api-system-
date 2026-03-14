@@ -166,6 +166,17 @@ def _merge_usage_info(primary: dict | None, fallback: dict | None) -> dict | Non
     return merged
 
 
+def _ensure_device_limit(usage_info: dict | None, fallback_device_limit: int | None) -> dict | None:
+    if fallback_device_limit is None:
+        return usage_info
+    if usage_info is None:
+        return {"device_limit": int(fallback_device_limit)}
+    if usage_info.get("device_limit") is None:
+        usage_info = dict(usage_info)
+        usage_info["device_limit"] = int(fallback_device_limit)
+    return usage_info
+
+
 def _parse_subscription_userinfo(value: str | None) -> dict | None:
     text = str(value or "").strip()
     if not text:
@@ -257,6 +268,7 @@ async def build_main_menu_snapshot(
                 timeout_seconds=usage_timeout_seconds,
             )
             usage_info = _merge_usage_info(usage_info, fallback_usage)
+            usage_info = _ensure_device_limit(usage_info, user.max_devices)
             _store_cached_usage(user, sub, usage_info)
     if sub:
         subscription_block, remaining_gb, remaining_days = _build_main_menu_subscription_block(sub, usage_info)

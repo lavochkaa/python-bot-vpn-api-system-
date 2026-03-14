@@ -1,7 +1,7 @@
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.constants.subscription_pricing import DURATION_MONTH_OPTIONS, TRAFFIC_OPTIONS
+from bot.constants.subscription_pricing import DURATION_MONTH_OPTIONS, TRAFFIC_OPTIONS, DEVICE_LIMIT_OPTIONS
 
 def subscription_activated_keyboard(
     show_reset_traffic: bool = False,
@@ -18,6 +18,7 @@ def subscription_activated_keyboard(
 def subscription_configurator_keyboard(
     selected_gb: int | None,
     selected_term_months: int | None,
+    selected_device_limit: int | None,
     has_promo: bool = False,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -30,13 +31,17 @@ def subscription_configurator_keyboard(
         prefix = "✅ " if term == selected_term_months else ""
         builder.button(text=f"{prefix}{term} мес", callback_data=f"sub_term_{term}")
 
+    for device_limit in DEVICE_LIMIT_OPTIONS:
+        prefix = "✅ " if device_limit == selected_device_limit else ""
+        builder.button(text=f"{prefix}{device_limit} устр.", callback_data=f"sub_devices_{device_limit}")
+
     if has_promo:
         builder.button(text="❌ Убрать промокод", callback_data="sub_promo_clear")
     else:
         builder.button(text="🎟 Промокод", callback_data="sub_promo_enter")
     builder.button(text="💳 Оплатить", callback_data="sub_pay")
     builder.button(text="🔙 Назад", callback_data="menu:main")
-    builder.adjust(3, 4, 2, 1)
+    builder.adjust(3, 4, 3, 2, 1)
     return builder.as_markup()
 
 

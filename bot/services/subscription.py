@@ -6,7 +6,7 @@ import re
 from urllib.parse import urlparse
 from uuid import UUID
 from bot.db.models import BalanceLedger, Subscription, VpnKey
-from bot.constants.subscription_pricing import SUBSCRIPTION_PRICE_MATRIX
+from bot.constants.subscription_pricing import SUBSCRIPTION_PRICE_MATRIX, DEVICE_LIMIT_PRICE_MULTIPLIERS
 from bot.repositories.ledger import BalanceLedgerRepository
 from bot.repositories.subscription import SubscriptionRepository
 from bot.repositories.plan import PlanRepository
@@ -91,12 +91,20 @@ class SubscriptionService:
         self.key_repo = key_repo
         self.vpn_provider = vpn_provider
 
-    def calculate_constructor_price(self, plan_type: str, traffic_gb: int, duration_days: int) -> Decimal:
+    def calculate_constructor_price(
+        self,
+        plan_type: str,
+        traffic_gb: int,
+        duration_days: int,
+        device_limit: int = 3,
+    ) -> Decimal:
         """Server-side price calculation for constructor."""
         _ = plan_type  # plan type is kept for compatibility with existing flow/state.
-        price = SUBSCRIPTION_PRICE_MATRIX.get((duration_days, traffic_gb))
-        if price is None:
+        base_price = SUBSCRIPTION_PRICE_MATRIX.get((duration_days, traffic_gb))
+        multiplier = DEVICE_LIMIT_PRICE_MULTIPLIERS.get(int(device_limit or 3))
+        if base_price is None or multiplier is None:
             raise ValueError("Неверные параметры тарифа.")
+        price = base_price * multiplier
         return price.quantize(Decimal("0.01"))
 
     async def purchase_with_balance(
@@ -107,6 +115,7 @@ class SubscriptionService:
         period_days: int | None = None,
         plan_type: str | None = None,
         traffic_gb: int | None = None,
+        device_limit: int | None = None,
         build_preset: str | None = None,
     ) -> Subscription:
         session = self.user_repo.session
@@ -125,6 +134,7 @@ class SubscriptionService:
                 plan_slug=plan.slug,
                 traffic_gb=traffic_gb,
                 duration_days=period_days,
+                device_limit=device_limit,
                 build_preset=build_preset,
             )
             provider_sub_id = str(
@@ -162,12 +172,15 @@ class SubscriptionService:
                 period_days=period_days,
                 plan_type=plan_type,
                 traffic_gb=traffic_gb,
+                device_limit=device_limit,
                 build_preset=build_preset,
                 final_price=final_price,
                 provider_subscription_id=provider_sub_id,
                 payload_json=payload_json,
                 preissued_key=key_data.key,
             )
+            if device_limit is not None:
+                user.max_devices = int(device_limit)
             await session.commit()
             await session.refresh(sub)
             return sub
@@ -186,6 +199,7 @@ class SubscriptionService:
         period_days: int | None = None,
         plan_type: str | None = None,
         traffic_gb: int | None = None,
+        device_limit: int | None = None,
         build_preset: str | None = None,
         final_price: Decimal | None = None,
         provider_subscription_id: str | None = None,
@@ -228,6 +242,11 @@ class SubscriptionService:
         )
         self.sub_repo.session.add(sub)
         await self.sub_repo.session.flush()
+        if device_limit is not None:
+            user = await self.user_repo.get_by_tg_id_for_update(user_id)
+            if user:
+                user.max_devices = int(device_limit)
+                self.sub_repo.session.add(user)
 
         if not preissued_key:
             raise ValueError("VPN key was not issued.")
@@ -271,6 +290,7 @@ class SubscriptionService:
                 plan_slug=plan.slug,
                 traffic_gb=sub.traffic_gb,
                 duration_days=remaining_days,
+                device_limit=user.max_devices if user else None,
                 build_preset=sub.build_preset,
             )
 

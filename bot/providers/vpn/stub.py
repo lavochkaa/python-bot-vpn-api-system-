@@ -11,9 +11,11 @@ class StubVpnKeyProvider(VpnKeyProvider):
         plan_slug: str,
         traffic_gb: int | None = None,
         duration_days: int | None = None,
+        device_limit: int | None = None,
         build_preset: str | None = None,
     ) -> VpnKeyData:
         # TODO: integrate real VPN panel (Outline API, 3x-ui, Marzban, etc.)
+        _ = device_limit
         key = f"vpn://{plan_slug}/{user_id}/{secrets.token_hex(16)}"
         return VpnKeyData(key=key)
 

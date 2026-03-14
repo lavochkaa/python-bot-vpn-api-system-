@@ -13,6 +13,8 @@ from bot.db.models import BalanceLedger, PromoTarget
 from bot.constants.subscription_pricing import (
     DURATION_MONTH_OPTIONS,
     DURATION_MONTH_TO_DAYS,
+    DEVICE_LIMIT_OPTIONS,
+    DEVICE_LIMIT_PRICE_MULTIPLIERS,
     SUBSCRIPTION_PRICE_MATRIX,
     TRAFFIC_OPTIONS,
 )
@@ -160,15 +162,17 @@ def _safe_error_text(exc: Exception) -> str:
     return html.escape(text)
 
 
-def _calculate_price(traffic_gb: int | None, term_months: int | None) -> Decimal | None:
-    if traffic_gb is None or term_months is None:
+def _calculate_price(traffic_gb: int | None, term_months: int | None, device_limit: int | None = 3) -> Decimal | None:
+    if traffic_gb is None or term_months is None or device_limit is None:
         return None
     duration_days = DURATION_MONTH_TO_DAYS.get(term_months)
     if duration_days is None:
         return None
-    price = SUBSCRIPTION_PRICE_MATRIX.get((duration_days, traffic_gb))
-    if price is None:
+    base_price = SUBSCRIPTION_PRICE_MATRIX.get((duration_days, traffic_gb))
+    multiplier = DEVICE_LIMIT_PRICE_MULTIPLIERS.get(int(device_limit))
+    if base_price is None or multiplier is None:
         return None
+    price = base_price * multiplier
     return price.quantize(Decimal("1"), rounding=ROUND_CEILING)
 
 
@@ -178,6 +182,7 @@ async def _refresh_promo_for_config(
     user_id: int,
     traffic_gb: int | None,
     term_months: int | None,
+    device_limit: int | None,
 ) -> tuple[str, int | None, Decimal | None]:
     data = await state.get_data()
     promo_code = data.get("sub_promo_code")
@@ -185,7 +190,7 @@ async def _refresh_promo_for_config(
         await state.update_data(sub_promo_final_price="")
         return "", None, None
 
-    base_price = _calculate_price(traffic_gb, term_months)
+    base_price = _calculate_price(traffic_gb, term_months, device_limit)
     if base_price is None:
         await state.update_data(sub_promo_final_price="")
         return str(promo_code), data.get("sub_promo_id"), None
@@ -213,13 +218,15 @@ async def _refresh_promo_for_config(
 def _build_configurator_text(
     traffic_gb: int | None,
     term_months: int | None,
+    device_limit: int | None,
     *,
     promo_code: str | None = None,
     final_price: Decimal | None = None,
 ) -> str:
     volume_title = f"{traffic_gb} ГБ" if traffic_gb is not None else "не выбран"
     term_title = f"{term_months} мес" if term_months is not None else "не выбран"
-    price = _calculate_price(traffic_gb, term_months)
+    devices_title = f"{device_limit}" if device_limit is not None else "не выбран"
+    price = _calculate_price(traffic_gb, term_months, device_limit)
     if final_price is not None:
         price = final_price
     price_title = f"{price} ₽" if price is not None else "будет рассчитана после выбора параметров"
@@ -230,6 +237,7 @@ def _build_configurator_text(
         "<b>Выбранная конфигурация:</b>\n"
         f"• Объем: <b>{volume_title}</b>\n"
         f"• Срок: <b>{term_title}</b>\n"
+        f"• Устройства: <b>{devices_title}</b>\n"
         f"• Промокод: <b>{promo_title}</b>\n"
         f"• Цена: <b>{price_title}</b>\n\n"
         "Выберите нужные параметры ниже."
@@ -276,11 +284,13 @@ async def _render_configurator(
     *,
     traffic_gb: int | None,
     term_months: int | None,
+    device_limit: int | None,
     with_banner: bool,
 ) -> None:
     await state.update_data(
         sub_traffic_gb=traffic_gb,
         sub_term_months=term_months,
+        sub_device_limit=device_limit,
         sub_chat_id=target.chat.id,
         sub_message_id=target.message_id,
         plan_type=DEFAULT_PLAN_TYPE,
@@ -295,10 +305,16 @@ async def _render_configurator(
     text = _build_configurator_text(
         traffic_gb,
         term_months,
+        device_limit,
         promo_code=promo_code,
         final_price=promo_final_price,
     )
-    keyboard = subscription_configurator_keyboard(traffic_gb, term_months, has_promo=bool(promo_code))
+    keyboard = subscription_configurator_keyboard(
+        traffic_gb,
+        term_months,
+        device_limit,
+        has_promo=bool(promo_code),
+    )
     _ = with_banner
     await _edit_only(target, text, reply_markup=keyboard)
 
@@ -328,6 +344,7 @@ async def subscription_menu(call: CallbackQuery, state: FSMContext, session: Asy
         state,
         traffic_gb=None,
         term_months=None,
+        device_limit=3,
         with_banner=True,
     )
     await call.answer()
@@ -341,6 +358,7 @@ async def subscription_configure_menu(call: CallbackQuery, state: FSMContext) ->
         state,
         traffic_gb=None,
         term_months=None,
+        device_limit=3,
         with_banner=True,
     )
     await call.answer()
@@ -367,6 +385,7 @@ async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, ses
             state,
             traffic_gb=None,
             term_months=None,
+            device_limit=3,
             with_banner=False,
         )
         return
@@ -455,18 +474,21 @@ async def subscription_pick_gb(call: CallbackQuery, state: FSMContext, session: 
 
     data = await state.get_data()
     term_months = data.get("sub_term_months")
+    device_limit = data.get("sub_device_limit")
     await _refresh_promo_for_config(
         state=state,
         session=session,
         user_id=call.from_user.id,
         traffic_gb=traffic_gb,
         term_months=term_months,
+        device_limit=device_limit,
     )
     await _render_configurator(
         call.message,
         state,
         traffic_gb=traffic_gb,
         term_months=term_months,
+        device_limit=device_limit,
         with_banner=False,
     )
     await call.answer()
@@ -486,18 +508,55 @@ async def subscription_pick_term(call: CallbackQuery, state: FSMContext, session
 
     data = await state.get_data()
     traffic_gb = data.get("sub_traffic_gb")
+    device_limit = data.get("sub_device_limit")
     await _refresh_promo_for_config(
         state=state,
         session=session,
         user_id=call.from_user.id,
         traffic_gb=traffic_gb,
         term_months=term_months,
+        device_limit=device_limit,
     )
     await _render_configurator(
         call.message,
         state,
         traffic_gb=traffic_gb,
         term_months=term_months,
+        device_limit=device_limit,
+        with_banner=False,
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("sub_devices_"))
+async def subscription_pick_devices(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    try:
+        device_limit = int(call.data.split("_")[-1])
+    except (TypeError, ValueError):
+        await call.answer("Некорректный лимит устройств.", show_alert=True)
+        return
+
+    if device_limit not in DEVICE_LIMIT_OPTIONS:
+        await call.answer("Некорректный лимит устройств.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    traffic_gb = data.get("sub_traffic_gb")
+    term_months = data.get("sub_term_months")
+    await _refresh_promo_for_config(
+        state=state,
+        session=session,
+        user_id=call.from_user.id,
+        traffic_gb=traffic_gb,
+        term_months=term_months,
+        device_limit=device_limit,
+    )
+    await _render_configurator(
+        call.message,
+        state,
+        traffic_gb=traffic_gb,
+        term_months=term_months,
+        device_limit=device_limit,
         with_banner=False,
     )
     await call.answer()
@@ -506,8 +565,8 @@ async def subscription_pick_term(call: CallbackQuery, state: FSMContext, session
 @router.callback_query(F.data == "sub_promo_enter")
 async def subscription_promo_enter(call: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    if not data.get("sub_traffic_gb") or not data.get("sub_term_months"):
-        await call.answer("Сначала выберите объем и срок.", show_alert=True)
+    if not data.get("sub_traffic_gb") or not data.get("sub_term_months") or not data.get("sub_device_limit"):
+        await call.answer("Сначала выберите объем, срок и устройства.", show_alert=True)
         return
     await state.set_state(SubscriptionStates.waiting_promo_code)
     await _edit_only(call.message, "Введите промокод для подписки:")
@@ -519,12 +578,14 @@ async def subscription_promo_clear(call: CallbackQuery, state: FSMContext) -> No
     data = await state.get_data()
     traffic_gb = data.get("sub_traffic_gb")
     term_months = data.get("sub_term_months")
+    device_limit = data.get("sub_device_limit")
     await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
     await _render_configurator(
         call.message,
         state,
         traffic_gb=traffic_gb,
         term_months=term_months,
+        device_limit=device_limit,
         with_banner=False,
     )
     await call.answer("Промокод удален")
@@ -536,11 +597,12 @@ async def subscription_promo_apply(message: Message, state: FSMContext, session:
     data = await state.get_data()
     traffic_gb = data.get("sub_traffic_gb")
     term_months = data.get("sub_term_months")
-    if not traffic_gb or not term_months:
+    device_limit = data.get("sub_device_limit")
+    if not traffic_gb or not term_months or not device_limit:
         await state.clear()
         await message.answer("Сессия истекла. Откройте подписку заново.")
         return
-    base_price = _calculate_price(traffic_gb, term_months)
+    base_price = _calculate_price(traffic_gb, term_months, device_limit)
     if base_price is None:
         await state.set_state(None)
         await message.answer("Не удалось рассчитать цену для этой конфигурации.")
@@ -574,10 +636,11 @@ async def subscription_promo_apply(message: Message, state: FSMContext, session:
     text = _build_configurator_text(
         traffic_gb,
         term_months,
+        device_limit,
         promo_code=promo.code if promo else "",
         final_price=final_price,
     )
-    kb = subscription_configurator_keyboard(traffic_gb, term_months, has_promo=bool(promo))
+    kb = subscription_configurator_keyboard(traffic_gb, term_months, device_limit, has_promo=bool(promo))
     if chat_id and message_id:
         await _edit_only_by_ids(message.bot, chat_id, message_id, text, reply_markup=kb)
     else:
@@ -589,12 +652,13 @@ async def subscription_pay(call: CallbackQuery, state: FSMContext, session: Asyn
     data = await state.get_data()
     traffic_gb = data.get("sub_traffic_gb")
     term_months = data.get("sub_term_months")
+    device_limit = data.get("sub_device_limit")
 
-    if traffic_gb is None or term_months is None:
-        await call.answer("Сначала выберите объем и срок подписки.", show_alert=True)
+    if traffic_gb is None or term_months is None or device_limit is None:
+        await call.answer("Сначала выберите объем, срок и устройства.", show_alert=True)
         return
 
-    base_price = _calculate_price(traffic_gb, term_months)
+    base_price = _calculate_price(traffic_gb, term_months, device_limit)
     if base_price is None:
         await call.answer("Цена для этой конфигурации не найдена.", show_alert=True)
         return
@@ -633,6 +697,7 @@ async def subscription_pay(call: CallbackQuery, state: FSMContext, session: Asyn
             session,
             traffic_gb=traffic_gb,
             duration_days=duration_days,
+            device_limit=device_limit,
             final_price=price,
             promo_id=int(promo_id) if promo_id else None,
         )
@@ -640,14 +705,14 @@ async def subscription_pay(call: CallbackQuery, state: FSMContext, session: Asyn
         await _edit_only(
             call.message,
             f"❌ {_safe_error_text(exc)}\n\nПроверьте настройки API в .env и попробуйте снова.",
-            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, has_promo=bool(promo_code)),
+            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, device_limit, has_promo=bool(promo_code)),
         )
     except Exception:
         logger.exception("Unexpected error while finishing subscription purchase")
         await _edit_only(
             call.message,
             "❌ Ошибка при оформлении подписки. Попробуйте еще раз через минуту.",
-            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, has_promo=bool(promo_code)),
+            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, device_limit, has_promo=bool(promo_code)),
         )
 
 
@@ -659,6 +724,7 @@ async def _finish_purchase(
     *,
     traffic_gb: int,
     duration_days: int,
+    device_limit: int,
     final_price: Decimal,
     promo_id: int | None = None,
 ) -> None:
@@ -686,6 +752,7 @@ async def _finish_purchase(
         period_days=duration_days,
         plan_type=DEFAULT_PLAN_TYPE,
         traffic_gb=traffic_gb,
+        device_limit=device_limit,
         build_preset=DEFAULT_BUILD_PRESET,
     )
     if promo_id:
