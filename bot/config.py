@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     vpn_api_force_ipv4: bool = True
     vpn_api_subscription_url_template: str = ""
     vpn_api_traffic_reset_strategy: str = "NO_RESET"
+    vpn_api_internal_squad_uuid: str = ""
     vpn_api_hwid_device_limit: int = 3
     hiddify_admin_link: str = ""
     hiddify_api_key: str = ""

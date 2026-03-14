@@ -42,6 +42,7 @@ class VpnApiClient:
         traffic_gb: int,
         device_limit: int,
         traffic_reset_strategy: str,
+        internal_squad_uuid: str | None = None,
     ) -> dict[str, Any]:
         existing = await self.find_user(telegram_id=user_id, username=username)
         now = datetime.now(timezone.utc)
@@ -73,6 +74,8 @@ class VpnApiClient:
                 "telegramId": user_id,
                 "hwidDeviceLimit": device_limit,
             }
+            if internal_squad_uuid:
+                payload["activeInternalSquads"] = [{"uuid": internal_squad_uuid}]
             update_attempts: tuple[tuple[str, str], ...] = (
                 ("PATCH", f"/api/users/{existing_uuid}"),
                 ("PUT", f"/api/users/{existing_uuid}"),
@@ -90,6 +93,8 @@ class VpnApiClient:
             "telegramId": user_id,
             "hwidDeviceLimit": device_limit,
         }
+        if internal_squad_uuid:
+            payload["activeInternalSquads"] = [{"uuid": internal_squad_uuid}]
         return await self._request_with_fallback(
             "POST",
             ("/users", "/api/users"),

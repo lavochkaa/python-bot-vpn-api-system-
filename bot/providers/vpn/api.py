@@ -33,6 +33,7 @@ class ApiVpnKeyProvider(VpnKeyProvider):
             traffic_gb=traffic,
             device_limit=max(0, int(settings.vpn_api_hwid_device_limit or 3)),
             traffic_reset_strategy=(settings.vpn_api_traffic_reset_strategy or "NO_RESET").strip().upper(),
+            internal_squad_uuid=(settings.vpn_api_internal_squad_uuid or "").strip() or None,
         )
         key = (
             self.client.build_subscription_url(payload)
