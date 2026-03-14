@@ -42,6 +42,7 @@ from bot.repositories.user import UserRepository
 from bot.repositories.vpn_key import VpnKeyRepository
 from bot.states.admin import AdminTicketStates
 from bot.services.subscription import SubscriptionService
+from bot.utils.formatters import invalidate_usage_cache
 from bot.utils.maintenance import build_maintenance_notice, get_all_user_ids
 from bot.utils.messages import edit_or_send, send_or_answer, send_to_chat
 
@@ -272,18 +273,27 @@ async def _render_user_profile(user_id: int, session: AsyncSession) -> tuple[str
             f"ID: <code>{user.id}</code>\n"
             f"Username: @{user.username or '—'}\n"
             f"Баланс: <b>{user.balance} ₽</b>\n"
+            f"Лимит устройств: <b>{user.max_devices}</b>\n"
+            f"Subscription UUID: <code>{user.subscription_uuid or '—'}</code>\n"
             f"{sub_text}",
             False,
         )
 
     plan_name = sub.plan.name if sub.plan else f"ID {sub.plan_id}"
     expires = sub.expires_at.strftime("%d.%m.%Y") if sub.expires_at else "—"
+    traffic = f"{sub.traffic_gb} ГБ" if sub.traffic_gb else "—"
+    duration = f"{sub.duration_days} дн." if sub.duration_days else "—"
     return (
         f"👤 <b>Профиль пользователя</b>\n"
         f"ID: <code>{user.id}</code>\n"
         f"Username: @{user.username or '—'}\n"
         f"Баланс: <b>{user.balance} ₽</b>\n"
+        f"Лимит устройств: <b>{user.max_devices}</b>\n"
+        f"Subscription UUID: <code>{user.subscription_uuid or '—'}</code>\n"
+        f"Provider subscription: <code>{sub.provider_subscription_id or '—'}</code>\n"
         f"Подписка: <b>{plan_name}</b>\n"
+        f"Трафик: <b>{traffic}</b>\n"
+        f"Срок: <b>{duration}</b>\n"
         f"Действует до: <b>{expires}</b>",
         True,
     )
@@ -1236,6 +1246,7 @@ async def admin_user_reset_traffic(call: CallbackQuery, session: AsyncSession, s
         except TelegramBadRequest:
             pass
         return
+    invalidate_usage_cache(user, sub)
 
     text, has_sub = await _render_user_profile_with_draft(user_id, session, state)
     await edit_or_send(call.message, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
@@ -1383,6 +1394,20 @@ async def admin_user_transfer_days_input(message: Message, state: FSMContext, se
         sub.duration_days = (sub.duration_days or 0) + days
         sub.traffic_gb = TRANSFER_TRAFFIC_GB
         await sub_repo.save(sub)
+        service = _build_subscription_service(session)
+        try:
+            await service.sync_existing_active_subscription(user_id)
+        except ValueError as exc:
+            await session.rollback()
+            await state.clear()
+            await _admin_edit_message(
+                message,
+                state,
+                "Не удалось синхронизировать обновленную подписку с панелью.\n"
+                f"Причина: <b>{html.escape(str(exc))}</b>",
+                reply_markup=admin_user_manage_keyboard(user_id, True),
+            )
+            return
     else:
         plan_id = await _resolve_plan_id_by_slug(session, TRANSFER_PLAN_SLUG)
         if not plan_id:
@@ -1399,6 +1424,7 @@ async def admin_user_transfer_days_input(message: Message, state: FSMContext, se
                     period_days=days,
                     plan_type=TRANSFER_PLAN_TYPE,
                     traffic_gb=TRANSFER_TRAFFIC_GB,
+                    device_limit=user.max_devices,
                     build_preset=TRANSFER_BUILD_PRESET,
                     final_price=Decimal("0"),
                     preissued_key=existing_keys[0].key,
@@ -1412,6 +1438,7 @@ async def admin_user_transfer_days_input(message: Message, state: FSMContext, se
                     period_days=days,
                     plan_type=TRANSFER_PLAN_TYPE,
                     traffic_gb=TRANSFER_TRAFFIC_GB,
+                    device_limit=user.max_devices,
                     build_preset=TRANSFER_BUILD_PRESET,
                 )
         except ValueError as exc:
@@ -1474,7 +1501,15 @@ async def admin_user_apply(call: CallbackQuery, state: FSMContext, session: Asyn
         if sub:
             base = sub.expires_at or datetime.now(timezone.utc)
             sub.expires_at = base + timedelta(days=days_delta)
+            sub.duration_days = (sub.duration_days or 0) + days_delta
             await sub_repo.save(sub)
+            service = _build_subscription_service(session)
+            try:
+                await service.sync_existing_active_subscription(user_id)
+            except ValueError as exc:
+                await session.rollback()
+                await call.answer(f"Панель не обновлена: {exc}", show_alert=True)
+                return
     await state.update_data(balance_delta="0", days_delta=0, plan_change="")
     text, has_sub = await _render_user_profile_with_draft(user_id, session, state)
     await edit_or_send(call.message, text, reply_markup=admin_user_manage_keyboard(user_id, has_sub))
