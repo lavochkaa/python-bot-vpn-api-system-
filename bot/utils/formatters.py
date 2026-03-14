@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from bot.db.models import User, Subscription
 from bot.providers.vpn.factory import build_vpn_provider
-from bot.repositories.vpn_key import VpnKeyRepository
-from bot.utils.subscription_url_info import fetch_subscription_url_info, merge_usage_info
 
 
 @dataclass
@@ -144,7 +142,7 @@ async def build_main_menu_snapshot(
         if usage_info is None:
             provider = build_vpn_provider()
             try:
-                api_usage_info = await asyncio.wait_for(
+                usage_info = await asyncio.wait_for(
                     provider.get_user_usage(
                         user_id=user.id,
                         subscription_uuid=user.subscription_uuid,
@@ -153,17 +151,7 @@ async def build_main_menu_snapshot(
                     timeout=usage_timeout_seconds,
                 )
             except Exception:
-                api_usage_info = None
-            try:
-                keys = await VpnKeyRepository(session).get_user_keys(user.id, limit=1)
-                sub_url = keys[0].key if keys else None
-                sub_url_info = await asyncio.wait_for(
-                    fetch_subscription_url_info(sub_url, timeout_seconds=usage_timeout_seconds),
-                    timeout=usage_timeout_seconds + 0.5,
-                )
-            except Exception:
-                sub_url_info = None
-            usage_info = merge_usage_info(api_usage_info, sub_url_info)
+                usage_info = None
             _store_cached_usage(user, sub, usage_info)
     if sub:
         subscription_block, remaining_gb, remaining_days = _build_main_menu_subscription_block(sub, usage_info)
