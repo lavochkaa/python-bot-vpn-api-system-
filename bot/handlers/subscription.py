@@ -32,8 +32,6 @@ from bot.services.subscription import SubscriptionService
 from bot.states.subscription import SubscriptionStates
 from bot.utils.messages import _short_text
 from bot.utils.formatters import invalidate_usage_cache
-from bot.utils.formatters import format_subscription_for_user
-from bot.utils.subscription_url_info import fetch_subscription_url_info, merge_usage_info
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -264,31 +262,11 @@ async def _build_active_subscription_text(
     user_id: int,
     subscription_uuid: str | None,
 ) -> str:
-    provider = build_vpn_provider()
-    api_usage_info = None
-    try:
-        api_usage_info = await provider.get_user_usage(
-            user_id=user_id,
-            subscription_uuid=subscription_uuid,
-            provider_subscription_id=sub.provider_subscription_id,
-        )
-    except Exception:
-        logger.exception("Failed to fetch live usage for user_id=%s", user_id)
-
-    try:
-        keys = await VpnKeyRepository(session).get_user_keys(user_id, limit=1)
-        sub_url = keys[0].key if keys else None
-        sub_url_info = await fetch_subscription_url_info(sub_url)
-    except Exception:
-        sub_url_info = None
-
-    usage_info = merge_usage_info(api_usage_info, sub_url_info)
-    sub_text, _, _ = await format_subscription_for_user(sub, show_type=False, usage_info=usage_info)
+    _ = (session, user_id, subscription_uuid, sub)
     return (
         "📦 <b>У вас уже есть активная подписка</b>\n\n"
-        "<b>Текущие параметры:</b>\n"
-        f"{sub_text}\n\n"
-        "Вы можете изменить конфигурацию или сбросить трафик."
+        "Подробная информация теперь показывается на стартовом экране.\n\n"
+        "Здесь вы можете изменить конфигурацию или сбросить трафик."
     )
 
 

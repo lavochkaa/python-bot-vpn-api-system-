@@ -16,6 +16,75 @@ class MainMenuSnapshot:
     remaining_days: int | None
 
 
+def _format_gb(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _guess_device_entry(last_user_agent: str | None) -> tuple[int | None, list[str]]:
+    ua = str(last_user_agent or "").strip()
+    if not ua:
+        return None, []
+    low = ua.lower()
+    if "iphone" in low or "ios" in low:
+        return 1, ["iOS - iPhone"]
+    if "macos" in low or "darwin" in low or "macbook" in low:
+        return 1, ["macOS - MacBook"]
+    if "windows" in low:
+        return 1, ["Windows - PC"]
+    if "android" in low:
+        return 1, ["Android - Phone"]
+    return 1, [ua[:48]]
+
+
+def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | None) -> tuple[str, float | None, int | None]:
+    now = datetime.now(timezone.utc)
+    expires = usage_info.get("expire_at") if usage_info else None
+    if expires is None:
+        expires = sub.expires_at
+
+    remaining_days = None
+    if expires and expires > now:
+        delta = expires - now
+        remaining_days = delta.days + (1 if delta.seconds > 0 or delta.microseconds > 0 else 0)
+
+    used_gb = usage_info.get("current_usage_gb") if usage_info else None
+    total_gb = usage_info.get("usage_limit_gb") if usage_info and usage_info.get("usage_limit_gb") is not None else None
+    if total_gb is None and sub.traffic_gb is not None:
+        total_gb = float(sub.traffic_gb)
+    remaining_gb = None
+    if total_gb is not None and used_gb is not None:
+        remaining_gb = max(float(total_gb) - float(used_gb), 0.0)
+
+    device_limit = None
+    if usage_info:
+        raw_limit = usage_info.get("device_limit")
+        if raw_limit is not None:
+            try:
+                device_limit = int(raw_limit)
+            except (TypeError, ValueError):
+                device_limit = None
+    if device_limit is None:
+        device_limit = 2
+
+    connected_count, device_lines = _guess_device_entry(usage_info.get("last_user_agent") if usage_info else None)
+    devices_title = f"{connected_count if connected_count is not None else '—'} / {device_limit}"
+    devices_block = ""
+    if device_lines:
+        devices_block = "\n📱 <b>Подключенные устройства:</b>\n" + "\n".join(f"• {line}" for line in device_lines)
+
+    expires_title = expires.strftime("%d.%m.%Y %H:%M") if expires else "—"
+    text = (
+        "📦 <b>Текущая подписка</b>\n\n"
+        f"Трафик: <b>{_format_gb(used_gb)} / {_format_gb(total_gb)} ГБ</b>\n"
+        f"Действует до: <b>{expires_title}</b>\n"
+        f"Устройства: <b>{devices_title}</b>"
+        f"{devices_block}"
+    )
+    return text, remaining_gb, remaining_days
+
+
 _USAGE_CACHE_TTL_SECONDS = 30.0
 _USAGE_CACHE: dict[tuple[int, str], tuple[float, dict | None]] = {}
 
@@ -96,18 +165,14 @@ async def build_main_menu_snapshot(
                 sub_url_info = None
             usage_info = merge_usage_info(api_usage_info, sub_url_info)
             _store_cached_usage(user, sub, usage_info)
-    sub_info, remaining_gb, remaining_days = await format_subscription_for_user(
-        sub,
-        show_type=False,
-        usage_info=usage_info,
-    )
     if sub:
-        subscription_block = (
-            "📦 <b>Текущая подписка</b>\n\n"
-            f"{sub_info}"
-        )
+        subscription_block, remaining_gb, remaining_days = _build_main_menu_subscription_block(sub, usage_info)
     else:
-        subscription_block = sub_info
+        subscription_block, remaining_gb, remaining_days = await format_subscription_for_user(
+            sub,
+            show_type=False,
+            usage_info=usage_info,
+        )
     text = (
         f"👋 Привет, <b>{user.full_name or 'пользователь'}</b>!\n\n"
         f"💳 Баланс: <b>{user.balance} ₽</b>\n\n"

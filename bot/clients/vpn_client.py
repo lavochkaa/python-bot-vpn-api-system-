@@ -140,6 +140,9 @@ class VpnApiClient:
         return {
             "current_usage_gb": self._bytes_to_gb(used_bytes),
             "usage_limit_gb": self._bytes_to_gb(limit_bytes),
+            "device_limit": self._to_int(user.get("hwidDeviceLimit")),
+            "last_user_agent": user.get("subLastUserAgent"),
+            "last_opened_at": user.get("subLastOpenedAt"),
         }
 
     async def reset_user_traffic(self, uuid: str) -> bool:
