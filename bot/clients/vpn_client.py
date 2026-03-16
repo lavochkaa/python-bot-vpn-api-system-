@@ -34,6 +34,13 @@ class VpnApiClient:
             raise ValueError("VPN_API_KEY is not configured.")
         self.config = config
 
+    def _build_url(self, path: str) -> str:
+        base = self.config.base_url.rstrip("/")
+        normalized_path = "/" + path.lstrip("/")
+        if base.endswith("/api") and normalized_path.startswith("/api/"):
+            normalized_path = normalized_path[4:]
+        return base + normalized_path
+
     async def create_or_update_subscription(
         self,
         *,
@@ -178,7 +185,7 @@ class VpnApiClient:
         return None
 
     async def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
-        url = self.config.base_url.rstrip("/") + "/" + path.lstrip("/")
+        url = self._build_url(path)
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
         connector = aiohttp.TCPConnector(
             ssl=self.config.verify_ssl,
@@ -267,7 +274,7 @@ class VpnApiClient:
         raise ValueError("VPN API request failed.")
 
     async def _request_optional_json(self, method: str, path: str, *, params: dict[str, str] | None = None) -> Any | None:
-        url = self.config.base_url.rstrip("/") + "/" + path.lstrip("/")
+        url = self._build_url(path)
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
         connector = aiohttp.TCPConnector(
             ssl=self.config.verify_ssl,
