@@ -312,8 +312,6 @@ class VpnApiClient:
                     ("/api/hwid-devices/by-user", {"userUuid": uuid}),
                     (f"/api/hwid-devices/by-user/{uuid}", None),
                     (f"/api/users/{uuid}/hwid-devices", None),
-                    (f"/api/users/{uuid}/subscription-requests", None),
-                    (f"/api/users/{uuid}/subscription-request-history", None),
                 ]
             )
         if user_id:
@@ -326,8 +324,6 @@ class VpnApiClient:
                     ("/api/hwid-devices/by-user", {"userId": user_id}),
                     (f"/api/hwid-devices/by-user/{user_id}", None),
                     (f"/api/users/{user_id}/hwid-devices", None),
-                    (f"/api/users/{user_id}/subscription-requests", None),
-                    (f"/api/users/{user_id}/subscription-request-history", None),
                 ]
             )
         attempts.extend(
@@ -364,11 +360,6 @@ class VpnApiClient:
             nested_device_lists = (
                 payload.get("hwidDevices"),
                 payload.get("userHwidDevices"),
-                payload.get("subscriptionRequests"),
-                payload.get("subscriptionRequestHistory"),
-                payload.get("history"),
-                payload.get("records"),
-                payload.get("requests"),
             )
             for value in nested_device_lists:
                 if isinstance(value, list):
@@ -385,11 +376,6 @@ class VpnApiClient:
                     for inner_direct_key in (
                         "hwidDevices",
                         "userHwidDevices",
-                        "subscriptionRequests",
-                        "subscriptionRequestHistory",
-                        "history",
-                        "records",
-                        "requests",
                     ):
                         inner_direct_value = value.get(inner_direct_key)
                         if isinstance(inner_direct_value, list):
@@ -509,11 +495,6 @@ class VpnApiClient:
             "hwidDevices",
             "userHwidDevices",
             "devices",
-            "subscriptionRequests",
-            "subscriptionRequestHistory",
-            "history",
-            "records",
-            "requests",
         ):
             value = payload.get(key)
             if isinstance(value, list):
