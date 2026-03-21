@@ -1,11 +1,21 @@
+import asyncio
 import logging
 import re
-import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
+
+from bot.clients.http import (
+    build_client_timeout,
+    build_connector,
+    first_matching_error,
+    is_retryable_http_status,
+    is_retryable_transport_error,
+    sleep_with_jitter,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -18,6 +28,13 @@ class VpnClientConfig:
     timeout_seconds: int = 20
     verify_ssl: bool = True
     force_ipv4: bool = True
+    connect_pool_limit: int = 32
+    connect_pool_limit_per_host: int = 8
+    keepalive_timeout_seconds: float = 30.0
+    dns_cache_ttl_seconds: int = 300
+    max_retries: int = 2
+    retry_base_seconds: float = 0.2
+    retry_cap_seconds: float = 2.0
 
 
 class VpnApiClient:
@@ -26,6 +43,8 @@ class VpnApiClient:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/145.0.0.0 Safari/537.36"
     )
+    _RETRYABLE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "PATCH", "DELETE"})
+    _STATUS_HEADER_FALLBACK = frozenset({401, 403})
 
     def __init__(self, config: VpnClientConfig):
         if not config.base_url:
@@ -33,6 +52,9 @@ class VpnApiClient:
         if not config.api_key:
             raise ValueError("VPN_API_KEY is not configured.")
         self.config = config
+        self._session: aiohttp.ClientSession | None = None
+        self._session_lock = asyncio.Lock()
+        self._request_semaphore = asyncio.Semaphore(max(1, self.config.connect_pool_limit_per_host))
 
     def _build_url(self, path: str) -> str:
         base = self.config.base_url.rstrip("/")
@@ -57,6 +79,7 @@ class VpnApiClient:
         expire_at = now + timedelta(days=days)
         traffic_limit_bytes = self._gb_to_bytes(traffic_gb)
         traffic_reset_strategy = self._normalize_traffic_reset_strategy(traffic_reset_strategy)
+        internal_squad_uuid = await self._resolve_internal_squad_uuid(internal_squad_uuid)
 
         if existing:
             existing_uuid = str(existing.get("uuid") or "").strip()
@@ -184,22 +207,35 @@ class VpnApiClient:
 
     async def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
         url = self._build_url(path)
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
-        connector = aiohttp.TCPConnector(
-            ssl=self.config.verify_ssl,
-            family=socket.AF_INET if self.config.force_ipv4 else socket.AF_UNSPEC,
-            enable_cleanup_closed=True,
-        )
         headers_candidates = self._build_headers_candidates(method, json=json)
-        last_error: Exception | None = None
+        errors: list[BaseException] = []
+        session = await self._ensure_session()
 
-        try:
-            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-                for headers in headers_candidates:
+        async with self._request_semaphore:
+            for header_idx, headers in enumerate(headers_candidates, start=1):
+                attempt = 0
+                while True:
                     try:
                         async with session.request(method, url, headers=headers, json=json) as response:
                             text = await response.text()
                             if response.status >= 400:
+                                if (
+                                    response.status in self._STATUS_HEADER_FALLBACK
+                                    and header_idx < len(headers_candidates)
+                                ):
+                                    break
+                                if (
+                                    method.upper() in self._RETRYABLE_METHODS
+                                    and is_retryable_http_status(response.status)
+                                    and attempt < self.config.max_retries
+                                ):
+                                    attempt += 1
+                                    await sleep_with_jitter(
+                                        attempt,
+                                        base=self.config.retry_base_seconds,
+                                        cap=self.config.retry_cap_seconds,
+                                    )
+                                    continue
                                 logger.error("VPN API error %s %s: %s %s", method, url, response.status, text)
                                 raise ValueError(f"VPN API error: HTTP {response.status}")
                             ctype = (response.headers.get("Content-Type") or "").lower()
@@ -209,13 +245,30 @@ class VpnApiClient:
                             return {"raw": text}
                     except ValueError:
                         raise
-                    except aiohttp.ClientError as exc:
-                        last_error = exc
-                        logger.warning("VPN API transport retry %s %s via alternate headers: %s", method, url, exc)
-                        continue
-        except aiohttp.ClientError as exc:
-            last_error = exc
+                    except Exception as exc:
+                        errors.append(exc)
+                        if (
+                            method.upper() in self._RETRYABLE_METHODS
+                            and is_retryable_transport_error(exc)
+                            and attempt < self.config.max_retries
+                        ):
+                            attempt += 1
+                            logger.warning(
+                                "VPN API retry %s %s attempt=%s reason=%s",
+                                method,
+                                url,
+                                attempt,
+                                exc,
+                            )
+                            await sleep_with_jitter(
+                                attempt,
+                                base=self.config.retry_base_seconds,
+                                cap=self.config.retry_cap_seconds,
+                            )
+                            continue
+                        break
 
+        last_error = first_matching_error(errors)
         if last_error is not None:
             logger.exception("VPN API request failed %s %s", method, url, exc_info=last_error)
             raise ValueError("VPN API is unavailable.") from last_error
@@ -225,7 +278,6 @@ class VpnApiClient:
         base_headers = {
             "Accept": "application/json, text/plain, */*",
             "User-Agent": self._USER_AGENT,
-            "Connection": "close",
         }
         if json is not None and method.upper() in {"POST", "PUT", "PATCH"}:
             base_headers["Content-Type"] = "application/json"
@@ -244,7 +296,10 @@ class VpnApiClient:
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         last_error: ValueError | None = None
+        deadline = time.monotonic() + max(6.0, float(self.config.timeout_seconds) * 1.5)
         for path in paths:
+            if time.monotonic() >= deadline:
+                break
             try:
                 return await self._request(method, path, json=json)
             except ValueError as exc:
@@ -261,7 +316,10 @@ class VpnApiClient:
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         last_error: ValueError | None = None
+        deadline = time.monotonic() + max(6.0, float(self.config.timeout_seconds) * 1.5)
         for method, path in attempts:
+            if time.monotonic() >= deadline:
+                break
             try:
                 return await self._request(method, path, json=json)
             except ValueError as exc:
@@ -273,26 +331,49 @@ class VpnApiClient:
 
     async def _request_optional_json(self, method: str, path: str, *, params: dict[str, str] | None = None) -> Any | None:
         url = self._build_url(path)
-        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
-        connector = aiohttp.TCPConnector(
-            ssl=self.config.verify_ssl,
-            family=socket.AF_INET if self.config.force_ipv4 else socket.AF_UNSPEC,
-            enable_cleanup_closed=True,
-        )
         headers_candidates = self._build_headers_candidates(method)
+        session = await self._ensure_session()
 
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            for headers in headers_candidates:
-                try:
-                    async with session.request(method, url, headers=headers, params=params) as response:
-                        if response.status >= 400:
+        async with self._request_semaphore:
+            for header_idx, headers in enumerate(headers_candidates, start=1):
+                attempt = 0
+                while True:
+                    try:
+                        async with session.request(method, url, headers=headers, params=params) as response:
+                            if response.status >= 400:
+                                if response.status in self._STATUS_HEADER_FALLBACK and header_idx < len(headers_candidates):
+                                    break
+                                if (
+                                    method.upper() in self._RETRYABLE_METHODS
+                                    and is_retryable_http_status(response.status)
+                                    and attempt < self.config.max_retries
+                                ):
+                                    attempt += 1
+                                    await sleep_with_jitter(
+                                        attempt,
+                                        base=self.config.retry_base_seconds,
+                                        cap=self.config.retry_cap_seconds,
+                                    )
+                                    continue
+                                break
+                            ctype = (response.headers.get("Content-Type") or "").lower()
+                            if "application/json" not in ctype:
+                                return None
+                            return await response.json()
+                    except Exception as exc:
+                        if (
+                            method.upper() in self._RETRYABLE_METHODS
+                            and is_retryable_transport_error(exc)
+                            and attempt < self.config.max_retries
+                        ):
+                            attempt += 1
+                            await sleep_with_jitter(
+                                attempt,
+                                base=self.config.retry_base_seconds,
+                                cap=self.config.retry_cap_seconds,
+                            )
                             continue
-                        ctype = (response.headers.get("Content-Type") or "").lower()
-                        if "application/json" not in ctype:
-                            return None
-                        return await response.json()
-                except aiohttp.ClientError:
-                    continue
+                        break
         return None
 
     async def _get_connected_devices(self, user: dict[str, Any]) -> list[str]:
@@ -300,12 +381,16 @@ class VpnApiClient:
         user_id = str(user.get("id") or "").strip()
         if not uuid and not user_id:
             return []
+        device_limit = self._extract_device_limit(user)
 
         direct_devices = self._extract_connected_devices(
             user,
             user_uuid=uuid,
             user_id=user_id,
-            scoped_payload=False,
+            scoped_payload=self._should_trust_scoped_device_payload(
+                user,
+                trusted_device_limit=device_limit,
+            ),
         )
         if direct_devices:
             return direct_devices
@@ -346,17 +431,49 @@ class VpnApiClient:
                 ("/api/hwid-devices/stats", None, False),
             ]
         )
+        deadline = time.monotonic() + max(4.0, min(10.0, float(self.config.timeout_seconds)))
         for path, params, scoped_payload in attempts:
+            if time.monotonic() >= deadline:
+                logger.warning("VPN API device lookup budget exhausted for uuid=%s user_id=%s", uuid, user_id)
+                break
             payload = await self._request_optional_json("GET", path, params=params)
+            effective_scoped_payload = scoped_payload
+            if not effective_scoped_payload and params:
+                effective_scoped_payload = self._should_trust_scoped_device_payload(
+                    payload,
+                    trusted_device_limit=device_limit,
+                )
             devices = self._extract_connected_devices(
                 payload,
                 user_uuid=uuid,
                 user_id=user_id,
-                scoped_payload=scoped_payload,
+                scoped_payload=effective_scoped_payload,
             )
             if devices:
                 return devices
         return []
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is not None and not self._session.closed:
+            return self._session
+
+        async with self._session_lock:
+            if self._session is not None and not self._session.closed:
+                return self._session
+            connector = build_connector(
+                verify_ssl=self.config.verify_ssl,
+                force_ipv4=self.config.force_ipv4,
+                limit=self.config.connect_pool_limit,
+                limit_per_host=self.config.connect_pool_limit_per_host,
+                keepalive_timeout=self.config.keepalive_timeout_seconds,
+                ttl_dns_cache=self.config.dns_cache_ttl_seconds,
+            )
+            self._session = aiohttp.ClientSession(
+                timeout=build_client_timeout(self.config.timeout_seconds),
+                connector=connector,
+                connector_owner=True,
+            )
+            return self._session
 
     def _extract_connected_devices(
         self,
@@ -369,43 +486,7 @@ class VpnApiClient:
         if payload is None:
             return []
 
-        candidates: list[Any] = []
-        if isinstance(payload, list):
-            candidates = payload
-        elif isinstance(payload, dict):
-            nested_device_lists = (
-                payload.get("hwidDevices"),
-                payload.get("userHwidDevices"),
-            )
-            for value in nested_device_lists:
-                if isinstance(value, list):
-                    candidates = value
-                    break
-            for key in ("response", "devices", "items", "data", "results"):
-                if candidates:
-                    break
-                value = payload.get(key)
-                if isinstance(value, list):
-                    candidates = value
-                    break
-                if isinstance(value, dict):
-                    for inner_direct_key in (
-                        "hwidDevices",
-                        "userHwidDevices",
-                    ):
-                        inner_direct_value = value.get(inner_direct_key)
-                        if isinstance(inner_direct_value, list):
-                            candidates = inner_direct_value
-                            break
-                    if candidates:
-                        break
-                    for inner_key in ("devices", "items", "data", "results"):
-                        inner_value = value.get(inner_key)
-                        if isinstance(inner_value, list):
-                            candidates = inner_value
-                            break
-                    if candidates:
-                        break
+        candidates = self._extract_device_candidates(payload)
 
         result: list[str] = []
         for item in candidates:
@@ -456,6 +537,65 @@ class VpnApiClient:
             if label:
                 result.append(label)
         return list(dict.fromkeys(result))
+
+    def _extract_device_candidates(self, payload: Any) -> list[Any]:
+        candidates: list[Any] = []
+        if isinstance(payload, list):
+            candidates = payload
+        elif isinstance(payload, dict):
+            nested_device_lists = (
+                payload.get("hwidDevices"),
+                payload.get("userHwidDevices"),
+            )
+            for value in nested_device_lists:
+                if isinstance(value, list):
+                    candidates = value
+                    break
+            for key in ("response", "devices", "items", "data", "results"):
+                if candidates:
+                    break
+                value = payload.get(key)
+                if isinstance(value, list):
+                    candidates = value
+                    break
+                if isinstance(value, dict):
+                    for inner_direct_key in (
+                        "hwidDevices",
+                        "userHwidDevices",
+                    ):
+                        inner_direct_value = value.get(inner_direct_key)
+                        if isinstance(inner_direct_value, list):
+                            candidates = inner_direct_value
+                            break
+                    if candidates:
+                        break
+                    for inner_key in ("devices", "items", "data", "results"):
+                        inner_value = value.get(inner_key)
+                        if isinstance(inner_value, list):
+                            candidates = inner_value
+                            break
+                    if candidates:
+                        break
+        return candidates
+
+    def _should_trust_scoped_device_payload(
+        self,
+        payload: Any,
+        *,
+        trusted_device_limit: int | None,
+    ) -> bool:
+        if payload is None:
+            return False
+        limit = self._to_int(trusted_device_limit)
+        if limit is None or limit <= 0:
+            return False
+        candidates = self._extract_device_candidates(payload)
+        if not candidates:
+            return False
+        device_count = self._count_unique_devices(candidates)
+        if device_count is None:
+            return False
+        return device_count <= limit
 
     def _device_matches_user(
         self,
@@ -548,6 +688,65 @@ class VpnApiClient:
         if unique_keys:
             return len(unique_keys)
         return plain_count or None
+
+    async def _resolve_internal_squad_uuid(self, internal_squad_uuid: str | None) -> str | None:
+        explicit_uuid = str(internal_squad_uuid or "").strip()
+        if explicit_uuid:
+            return explicit_uuid
+
+        for path in (
+            "/api/internal-squads",
+            "/internal-squads",
+            "/api/internalSquads",
+            "/internalSquads",
+        ):
+            payload = await self._request_optional_json("GET", path)
+            resolved_uuid = self._pick_default_internal_squad_uuid(payload)
+            if resolved_uuid:
+                return resolved_uuid
+        return None
+
+    def _pick_default_internal_squad_uuid(self, payload: Any) -> str | None:
+        candidates: list[dict[str, Any]] = []
+        if isinstance(payload, list):
+            candidates = [item for item in payload if isinstance(item, dict)]
+        elif isinstance(payload, dict):
+            for key in ("internalSquads", "items", "data", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    candidates = [item for item in value if isinstance(item, dict)]
+                    break
+            if not candidates:
+                response = payload.get("response")
+                if isinstance(response, dict):
+                    return self._pick_default_internal_squad_uuid(response)
+                if isinstance(response, list):
+                    candidates = [item for item in response if isinstance(item, dict)]
+
+        if not candidates:
+            return None
+
+        for item in candidates:
+            if any(
+                bool(item.get(key))
+                for key in ("isDefault", "default", "is_default", "defaultSquad", "is_default_squad")
+            ):
+                squad_uuid = self._extract_internal_squad_uuid(item)
+                if squad_uuid:
+                    return squad_uuid
+
+        for item in candidates:
+            squad_uuid = self._extract_internal_squad_uuid(item)
+            if squad_uuid:
+                return squad_uuid
+        return None
+
+    def _extract_internal_squad_uuid(self, payload: dict[str, Any]) -> str | None:
+        for key in ("uuid", "internalSquadUuid", "squadUuid", "id"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        return None
 
     async def _list_users(self) -> list[dict[str, Any]]:
         for path in ("/api/users",):
