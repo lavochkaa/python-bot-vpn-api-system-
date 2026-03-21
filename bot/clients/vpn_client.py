@@ -145,9 +145,7 @@ class VpnApiClient:
         if used_bytes is None and limit_bytes is None:
             return None
         connected_devices = await self._get_connected_devices(user)
-        connected_devices_count = self._extract_device_count(user)
-        if connected_devices_count is None and connected_devices:
-            connected_devices_count = len(connected_devices)
+        connected_devices_count = len(connected_devices)
         return {
             "current_usage_gb": self._bytes_to_gb(used_bytes),
             "usage_limit_gb": self._bytes_to_gb(limit_bytes),
@@ -303,49 +301,59 @@ class VpnApiClient:
         if not uuid and not user_id:
             return []
 
-        direct_devices = self._extract_connected_devices(user, user_uuid=uuid, user_id=user_id)
+        direct_devices = self._extract_connected_devices(
+            user,
+            user_uuid=uuid,
+            user_id=user_id,
+            scoped_payload=False,
+        )
         if direct_devices:
             return direct_devices
 
-        attempts: list[tuple[str, dict[str, str] | None]] = []
+        attempts: list[tuple[str, dict[str, str] | None, bool]] = []
         if uuid:
             attempts.extend(
                 [
-                    (f"/api/hwid/devices/{uuid}", None),
-                    ("/api/hwid/devices", {"userUuid": uuid}),
-                    ("/api/hwid-devices", {"userUuid": uuid}),
-                    ("/api/hwid-devices", {"uuid": uuid}),
-                    ("/api/hwid-devices", {"ownerUuid": uuid}),
-                    ("/api/hwid-devices/by-user", {"userUuid": uuid}),
-                    (f"/api/hwid-devices/by-user/{uuid}", None),
-                    (f"/api/users/{uuid}/hwid-devices", None),
+                    (f"/api/hwid/devices/{uuid}", None, True),
+                    ("/api/hwid/devices", {"userUuid": uuid}, False),
+                    ("/api/hwid-devices", {"userUuid": uuid}, False),
+                    ("/api/hwid-devices", {"uuid": uuid}, False),
+                    ("/api/hwid-devices", {"ownerUuid": uuid}, False),
+                    ("/api/hwid-devices/by-user", {"userUuid": uuid}, False),
+                    (f"/api/hwid-devices/by-user/{uuid}", None, True),
+                    (f"/api/users/{uuid}/hwid-devices", None, True),
                 ]
             )
         if user_id:
             attempts.extend(
                 [
-                    ("/api/hwid/devices", {"userId": user_id}),
-                    ("/api/hwid-devices", {"userId": user_id}),
-                    ("/api/hwid-devices", {"user_id": user_id}),
-                    ("/api/hwid-devices", {"ownerId": user_id}),
-                    ("/api/hwid-devices/by-user", {"userId": user_id}),
-                    (f"/api/hwid-devices/by-user/{user_id}", None),
-                    (f"/api/users/{user_id}/hwid-devices", None),
+                    ("/api/hwid/devices", {"userId": user_id}, False),
+                    ("/api/hwid-devices", {"userId": user_id}, False),
+                    ("/api/hwid-devices", {"user_id": user_id}, False),
+                    ("/api/hwid-devices", {"ownerId": user_id}, False),
+                    ("/api/hwid-devices/by-user", {"userId": user_id}, False),
+                    (f"/api/hwid-devices/by-user/{user_id}", None, True),
+                    (f"/api/users/{user_id}/hwid-devices", None, True),
                 ]
             )
         attempts.extend(
             [
-                ("/api/hwid/devices", None),
-                ("/api/hwid/devices", {"start": "0", "size": "500"}),
-                ("/api/hwid/stats", None),
-                ("/api/hwid-devices", None),
-                ("/api/hwid-devices", {"start": "0", "size": "500"}),
-                ("/api/hwid-devices/stats", None),
+                ("/api/hwid/devices", None, False),
+                ("/api/hwid/devices", {"start": "0", "size": "500"}, False),
+                ("/api/hwid/stats", None, False),
+                ("/api/hwid-devices", None, False),
+                ("/api/hwid-devices", {"start": "0", "size": "500"}, False),
+                ("/api/hwid-devices/stats", None, False),
             ]
         )
-        for path, params in attempts:
+        for path, params, scoped_payload in attempts:
             payload = await self._request_optional_json("GET", path, params=params)
-            devices = self._extract_connected_devices(payload, user_uuid=uuid, user_id=user_id)
+            devices = self._extract_connected_devices(
+                payload,
+                user_uuid=uuid,
+                user_id=user_id,
+                scoped_payload=scoped_payload,
+            )
             if devices:
                 return devices
         return []
@@ -356,6 +364,7 @@ class VpnApiClient:
         *,
         user_uuid: str | None = None,
         user_id: str | None = None,
+        scoped_payload: bool = False,
     ) -> list[str]:
         if payload is None:
             return []
@@ -402,7 +411,12 @@ class VpnApiClient:
         for item in candidates:
             if not isinstance(item, dict):
                 continue
-            if not self._device_matches_user(item, user_uuid=user_uuid, user_id=user_id):
+            if not self._device_matches_user(
+                item,
+                user_uuid=user_uuid,
+                user_id=user_id,
+                scoped_payload=scoped_payload,
+            ):
                 continue
             device_info = item.get("deviceInfo") if isinstance(item.get("deviceInfo"), dict) else {}
             os_name = (
@@ -449,6 +463,7 @@ class VpnApiClient:
         *,
         user_uuid: str | None = None,
         user_id: str | None = None,
+        scoped_payload: bool = False,
     ) -> bool:
         if not user_uuid and not user_id:
             return True
@@ -477,7 +492,7 @@ class VpnApiClient:
 
         # If payload is already scoped to a single user, it may omit ownership fields entirely.
         scoped_keys = ("deviceOs", "deviceModel", "xDeviceOs", "xDeviceModel", "hwid", "deviceInfo", "userAgent")
-        if any(key in item for key in scoped_keys):
+        if scoped_payload and any(key in item for key in scoped_keys):
             return True
 
         return False
