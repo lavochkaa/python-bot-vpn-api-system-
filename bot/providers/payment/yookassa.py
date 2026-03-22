@@ -1,15 +1,27 @@
 import base64
 import json
+import logging
 from decimal import Decimal
 from uuid import uuid4
 
 import aiohttp
 
+from bot.clients.http import (
+    build_client_timeout,
+    is_retryable_http_status,
+    is_retryable_transport_error,
+    sleep_with_jitter,
+)
 from bot.config import settings
 from bot.providers.payment.base import PaymentInvoice, PaymentProvider, PaymentResult
 
 
+logger = logging.getLogger(__name__)
+
+
 class YooKassaPaymentProvider(PaymentProvider):
+    _RETRYABLE_METHODS = frozenset({"GET", "HEAD"})
+
     def __init__(self) -> None:
         self.api_base = (settings.yookassa_api_base or "https://api.yookassa.ru/v3").rstrip("/")
         self.shop_id = settings.yookassa_shop_id.strip()
@@ -86,19 +98,48 @@ class YooKassaPaymentProvider(PaymentProvider):
             headers["Idempotence-Key"] = idempotence_key
 
         url = f"{self.api_base}/{path.lstrip('/')}"
-        timeout = aiohttp.ClientTimeout(total=max(10, int(settings.vpn_api_timeout_seconds or 20)))
+        timeout = build_client_timeout(max(10, int(settings.vpn_api_timeout_seconds or 20)))
+        max_retries = 2 if idempotence_key or method.upper() in self._RETRYABLE_METHODS else 0
+
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.request(method, url, headers=headers, json=json_data) as response:
-                body = await response.text()
-                if response.status >= 400:
-                    raise ValueError(f"YooKassa API error {response.status}: {self._short(body)}")
+            attempt = 0
+            while True:
                 try:
-                    data = json.loads(body)
-                except json.JSONDecodeError as exc:
-                    raise ValueError("YooKassa API returned invalid JSON.") from exc
-                if not isinstance(data, dict):
-                    raise ValueError("YooKassa API returned unexpected payload.")
-                return data
+                    async with session.request(method, url, headers=headers, json=json_data) as response:
+                        body = await response.text()
+                        if response.status >= 400:
+                            if is_retryable_http_status(response.status) and attempt < max_retries:
+                                attempt += 1
+                                logger.warning(
+                                    "YooKassa retry %s %s attempt=%s status=%s",
+                                    method,
+                                    url,
+                                    attempt,
+                                    response.status,
+                                )
+                                await sleep_with_jitter(attempt)
+                                continue
+                            raise ValueError(f"YooKassa API error {response.status}: {self._short(body)}")
+                        try:
+                            data = json.loads(body)
+                        except json.JSONDecodeError as exc:
+                            raise ValueError("YooKassa API returned invalid JSON.") from exc
+                        if not isinstance(data, dict):
+                            raise ValueError("YooKassa API returned unexpected payload.")
+                        return data
+                except Exception as exc:
+                    if is_retryable_transport_error(exc) and attempt < max_retries:
+                        attempt += 1
+                        logger.warning(
+                            "YooKassa transport retry %s %s attempt=%s reason=%s",
+                            method,
+                            url,
+                            attempt,
+                            exc,
+                        )
+                        await sleep_with_jitter(attempt)
+                        continue
+                    raise
 
     def _basic_token(self) -> str:
         raw = f"{self.shop_id}:{self.secret_key}".encode("utf-8")
