@@ -229,6 +229,22 @@ def _normalize_constructor_value(value: object, allowed: tuple[int, ...]) -> int
     return parsed if parsed in allowed else None
 
 
+def _parse_constructor_callback(
+    callback_data: str | None,
+    prefix: str,
+) -> tuple[int | None, int | None, int | None] | None:
+    if not callback_data:
+        return None
+    parts = callback_data.split(":")
+    if len(parts) != 4 or parts[0] != prefix:
+        return None
+    return (
+        _normalize_constructor_value(parts[1], TRAFFIC_OPTIONS),
+        _normalize_constructor_value(parts[2], DURATION_MONTH_OPTIONS),
+        _normalize_constructor_value(parts[3], DEVICE_LIMIT_OPTIONS),
+    )
+
+
 def _get_constructor_selection(data: dict[str, object]) -> tuple[int | None, int | None, int | None]:
     return (
         _normalize_constructor_value(data.get("sub_traffic_gb"), TRAFFIC_OPTIONS),
@@ -415,6 +431,46 @@ async def _render_configurator(
     await _store_subscription_screen_refs(state, screen or target)
 
 
+async def _render_configurator_selection(
+    target: Message,
+    state: FSMContext,
+    *,
+    traffic_gb: int | None,
+    term_months: int | None,
+    device_limit: int | None,
+    with_banner: bool,
+) -> None:
+    await state.update_data(
+        sub_traffic_gb=traffic_gb,
+        sub_term_months=term_months,
+        sub_device_limit=device_limit,
+        plan_type=DEFAULT_PLAN_TYPE,
+        plan_slug=DEFAULT_PLAN_SLUG,
+        build_preset=DEFAULT_BUILD_PRESET,
+    )
+    data = await state.get_data()
+    promo_code = data.get("sub_promo_code")
+    promo_final = data.get("sub_promo_final_price")
+    promo_final_price = Decimal(str(promo_final)) if promo_final else None
+
+    text = _build_configurator_text(
+        traffic_gb,
+        term_months,
+        device_limit,
+        promo_code=str(promo_code) if promo_code else None,
+        final_price=promo_final_price,
+    )
+    keyboard = subscription_configurator_keyboard(
+        traffic_gb,
+        term_months,
+        device_limit,
+        has_promo=bool(promo_code),
+    )
+    _ = with_banner
+    screen = await _edit_only(target, text, reply_markup=keyboard)
+    await _store_subscription_screen_refs(state, screen or target)
+
+
 async def _render_configurator_by_ids(
     bot,
     state: FSMContext,
@@ -449,9 +505,12 @@ async def subscription_menu(call: CallbackQuery, state: FSMContext, session: Asy
             )
             await call.answer()
             return
-        await _render_configurator(
+        await _render_configurator_selection(
             call.message,
             state,
+            traffic_gb=None,
+            term_months=None,
+            device_limit=None,
             with_banner=True,
         )
     await call.answer()
@@ -462,9 +521,12 @@ async def subscription_configure_menu(call: CallbackQuery, state: FSMContext) ->
     async with _get_subscription_lock(call.from_user.id):
         await state.clear()
         await _reset_constructor_state(state)
-        await _render_configurator(
+        await _render_configurator_selection(
             call.message,
             state,
+            traffic_gb=None,
+            term_months=None,
+            device_limit=None,
             with_banner=True,
         )
     await call.answer()
@@ -488,9 +550,12 @@ async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, ses
                 await call.answer("Активной подписки нет.", show_alert=True)
             except TelegramBadRequest:
                 pass
-            await _render_configurator(
+            await _render_configurator_selection(
                 call.message,
                 state,
+                traffic_gb=None,
+                term_months=None,
+                device_limit=None,
                 with_banner=False,
             )
             return
@@ -590,6 +655,33 @@ async def subscription_pick_gb(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data.startswith("sub_cfg:"))
+async def subscription_pick_config(call: CallbackQuery, state: FSMContext) -> None:
+    parsed = _parse_constructor_callback(call.data, "sub_cfg")
+    if parsed is None:
+        await call.answer("Некорректный выбор.", show_alert=True)
+        return
+
+    traffic_gb, term_months, device_limit = parsed
+
+    async with _get_subscription_lock(call.from_user.id):
+        await _set_constructor_selection(
+            state,
+            traffic_gb=traffic_gb,
+            term_months=term_months,
+            device_limit=device_limit,
+        )
+        await _render_configurator_selection(
+            call.message,
+            state,
+            traffic_gb=traffic_gb,
+            term_months=term_months,
+            device_limit=device_limit,
+            with_banner=False,
+        )
+    await call.answer()
+
+
 @router.callback_query(F.data.startswith("sub_term_"))
 async def subscription_pick_term(call: CallbackQuery, state: FSMContext) -> None:
     try:
@@ -640,27 +732,42 @@ async def subscription_pick_devices(call: CallbackQuery, state: FSMContext) -> N
     await call.answer()
 
 
-@router.callback_query(F.data == "sub_promo_enter")
+@router.callback_query(F.data.startswith("sub_promo_enter"))
 async def subscription_promo_enter(call: CallbackQuery, state: FSMContext) -> None:
     async with _get_subscription_lock(call.from_user.id):
-        traffic_gb, term_months, device_limit = _get_constructor_selection(await state.get_data())
+        parsed = _parse_constructor_callback(call.data, "sub_promo_enter")
+        if parsed is None:
+            parsed = _get_constructor_selection(await state.get_data())
+        traffic_gb, term_months, device_limit = parsed
         missing_text = _build_missing_constructor_text(traffic_gb, term_months, device_limit)
         if missing_text:
             await call.answer(f"Сначала завершите выбор. {missing_text}", show_alert=True)
             return
+        await state.update_data(
+            sub_traffic_gb=traffic_gb,
+            sub_term_months=term_months,
+            sub_device_limit=device_limit,
+        )
         await state.set_state(SubscriptionStates.waiting_promo_code)
         screen = await _edit_only(call.message, "Введите промокод для подписки:")
         await _store_subscription_screen_refs(state, screen or call.message)
     await call.answer()
 
 
-@router.callback_query(F.data == "sub_promo_clear")
+@router.callback_query(F.data.startswith("sub_promo_clear"))
 async def subscription_promo_clear(call: CallbackQuery, state: FSMContext) -> None:
     async with _get_subscription_lock(call.from_user.id):
+        parsed = _parse_constructor_callback(call.data, "sub_promo_clear")
+        if parsed is None:
+            parsed = _get_constructor_selection(await state.get_data())
+        traffic_gb, term_months, device_limit = parsed
         await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
-        await _render_configurator(
+        await _render_configurator_selection(
             call.message,
             state,
+            traffic_gb=traffic_gb,
+            term_months=term_months,
+            device_limit=device_limit,
             with_banner=False,
         )
     await call.answer("Промокод удален")
@@ -726,11 +833,19 @@ async def subscription_promo_apply(message: Message, state: FSMContext, session:
             await _store_subscription_screen_refs(state, sent)
 
 
-@router.callback_query(F.data == "sub_pay")
+@router.callback_query(F.data.startswith("sub_pay"))
 async def subscription_pay(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     async with _get_subscription_lock(call.from_user.id):
         data = await state.get_data()
-        traffic_gb, term_months, device_limit = _get_constructor_selection(data)
+        parsed = _parse_constructor_callback(call.data, "sub_pay")
+        if parsed is None:
+            parsed = _get_constructor_selection(data)
+        traffic_gb, term_months, device_limit = parsed
+        await state.update_data(
+            sub_traffic_gb=traffic_gb,
+            sub_term_months=term_months,
+            sub_device_limit=device_limit,
+        )
 
         missing_text = _build_missing_constructor_text(traffic_gb, term_months, device_limit)
         if missing_text:
@@ -757,7 +872,14 @@ async def subscription_pay(call: CallbackQuery, state: FSMContext, session: Asyn
                 promo_id = promo.id if promo else None
             except ValueError:
                 await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
-                await _render_configurator(call.message, state, with_banner=False)
+                await _render_configurator_selection(
+                    call.message,
+                    state,
+                    traffic_gb=traffic_gb,
+                    term_months=term_months,
+                    device_limit=device_limit,
+                    with_banner=False,
+                )
                 await call.answer("Промокод сброшен", show_alert=True)
                 return
 
