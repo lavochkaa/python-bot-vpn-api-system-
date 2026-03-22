@@ -1,3 +1,4 @@
+import asyncio
 from decimal import Decimal, ROUND_CEILING
 import html
 import logging
@@ -38,12 +39,21 @@ from bot.utils.formatters import invalidate_usage_cache
 
 router = Router()
 logger = logging.getLogger(__name__)
+_subscription_locks: dict[int, asyncio.Lock] = {}
 
 DEFAULT_PLAN_TYPE = "pc"
 DEFAULT_PLAN_SLUG = "vpn"
 DEFAULT_BUILD_PRESET = "max"
 TRAFFIC_RESET_PRICE = Decimal("79")
 _CONFIG_UNSET = object()
+
+
+def _get_subscription_lock(user_id: int) -> asyncio.Lock:
+    lock = _subscription_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _subscription_locks[user_id] = lock
+    return lock
 
 
 async def _edit_only(message: Message, text: str, reply_markup=None) -> Message | None:
@@ -419,137 +429,140 @@ async def _render_configurator_by_ids(
 
 @router.callback_query(F.data == "menu:subscription")
 async def subscription_menu(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    await state.clear()
-    await _reset_constructor_state(state)
-    sub = await SubscriptionRepository(session).get_active(call.from_user.id)
-    if sub:
-        user = await UserRepository(session).get_by_tg_id(call.from_user.id)
-        if user:
-            invalidate_usage_cache(user, sub)
-        await _edit_only(
+    async with _get_subscription_lock(call.from_user.id):
+        await state.clear()
+        await _reset_constructor_state(state)
+        sub = await SubscriptionRepository(session).get_active(call.from_user.id)
+        if sub:
+            user = await UserRepository(session).get_by_tg_id(call.from_user.id)
+            if user:
+                invalidate_usage_cache(user, sub)
+            await _edit_only(
+                call.message,
+                await _build_active_subscription_text(
+                    sub,
+                    session=session,
+                    user_id=call.from_user.id,
+                    subscription_uuid=user.subscription_uuid if user else None,
+                ),
+                reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
+            )
+            await call.answer()
+            return
+        await _render_configurator(
             call.message,
-            await _build_active_subscription_text(
-                sub,
-                session=session,
-                user_id=call.from_user.id,
-                subscription_uuid=user.subscription_uuid if user else None,
-            ),
-            reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
+            state,
+            with_banner=True,
         )
-        await call.answer()
-        return
-    await _render_configurator(
-        call.message,
-        state,
-        with_banner=True,
-    )
     await call.answer()
 
 
 @router.callback_query(F.data == "menu:subscription:configure")
 async def subscription_configure_menu(call: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await _reset_constructor_state(state)
-    await _render_configurator(
-        call.message,
-        state,
-        with_banner=True,
-    )
+    async with _get_subscription_lock(call.from_user.id):
+        await state.clear()
+        await _reset_constructor_state(state)
+        await _render_configurator(
+            call.message,
+            state,
+            with_banner=True,
+        )
     await call.answer()
 
 
 @router.callback_query(F.data == "sub_reset_traffic")
 async def subscription_reset_traffic(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    try:
-        await call.answer("Выполняю сброс трафика...")
-    except TelegramBadRequest:
-        pass
-    await state.clear()
-    await _reset_constructor_state(state)
-    sub_repo = SubscriptionRepository(session)
-    user_repo = UserRepository(session)
-
-    active_sub = await sub_repo.get_active(call.from_user.id)
-    if not active_sub:
+    async with _get_subscription_lock(call.from_user.id):
         try:
-            await call.answer("Активной подписки нет.", show_alert=True)
+            await call.answer("Выполняю сброс трафика...")
         except TelegramBadRequest:
             pass
-        await _render_configurator(
-            call.message,
-            state,
-            with_banner=False,
+        await state.clear()
+        await _reset_constructor_state(state)
+        sub_repo = SubscriptionRepository(session)
+        user_repo = UserRepository(session)
+
+        active_sub = await sub_repo.get_active(call.from_user.id)
+        if not active_sub:
+            try:
+                await call.answer("Активной подписки нет.", show_alert=True)
+            except TelegramBadRequest:
+                pass
+            await _render_configurator(
+                call.message,
+                state,
+                with_banner=False,
+            )
+            return
+
+        user = await user_repo.get_by_tg_id_for_update(call.from_user.id)
+        if not user:
+            try:
+                await call.answer("Пользователь не найден.", show_alert=True)
+            except TelegramBadRequest:
+                pass
+            return
+        if user.balance < TRAFFIC_RESET_PRICE:
+            await _edit_only(
+                call.message,
+                "Недостаточно средств для сброса трафика.\n"
+                f"Баланс: <b>{user.balance} ₽</b>\n"
+                f"Стоимость сброса: <b>{TRAFFIC_RESET_PRICE} ₽</b>",
+                reply_markup=insufficient_balance_keyboard(),
+            )
+            try:
+                await call.answer("Недостаточно средств", show_alert=True)
+            except TelegramBadRequest:
+                pass
+            return
+
+        provider = build_vpn_provider()
+        try:
+            ok = await provider.reset_user_traffic(
+                user_id=user.id,
+                subscription_uuid=user.subscription_uuid,
+                provider_subscription_id=active_sub.provider_subscription_id,
+            )
+        except Exception:
+            logger.exception("Traffic reset call failed for user_id=%s", user.id)
+            ok = False
+
+        if not ok:
+            await session.rollback()
+            await _edit_only(
+                call.message,
+                "❌ Не удалось выполнить сброс трафика в панели.\n"
+                "Попробуйте позже или обратитесь в поддержку.",
+                reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
+            )
+            try:
+                await call.answer("Сброс не выполнен", show_alert=True)
+            except TelegramBadRequest:
+                pass
+            return
+
+        user.balance -= TRAFFIC_RESET_PRICE
+        session.add(
+            BalanceLedger(
+                user_id=user.id,
+                amount=-TRAFFIC_RESET_PRICE,
+                reason="subscription_traffic_reset",
+            )
         )
-        return
+        await session.commit()
+        invalidate_usage_cache(user, active_sub)
 
-    user = await user_repo.get_by_tg_id_for_update(call.from_user.id)
-    if not user:
-        try:
-            await call.answer("Пользователь не найден.", show_alert=True)
-        except TelegramBadRequest:
-            pass
-        return
-    if user.balance < TRAFFIC_RESET_PRICE:
         await _edit_only(
             call.message,
-            "Недостаточно средств для сброса трафика.\n"
-            f"Баланс: <b>{user.balance} ₽</b>\n"
-            f"Стоимость сброса: <b>{TRAFFIC_RESET_PRICE} ₽</b>",
-            reply_markup=insufficient_balance_keyboard(),
-        )
-        try:
-            await call.answer("Недостаточно средств", show_alert=True)
-        except TelegramBadRequest:
-            pass
-        return
-
-    provider = build_vpn_provider()
-    try:
-        ok = await provider.reset_user_traffic(
-            user_id=user.id,
-            subscription_uuid=user.subscription_uuid,
-            provider_subscription_id=active_sub.provider_subscription_id,
-        )
-    except Exception:
-        logger.exception("Traffic reset call failed for user_id=%s", user.id)
-        ok = False
-
-    if not ok:
-        await session.rollback()
-        await _edit_only(
-            call.message,
-            "❌ Не удалось выполнить сброс трафика в панели.\n"
-            "Попробуйте позже или обратитесь в поддержку.",
+            "✅ Трафик успешно сброшен.\n"
+            f"Списано: <b>{TRAFFIC_RESET_PRICE} ₽</b>\n"
+            f"Текущий баланс: <b>{user.balance} ₽</b>",
             reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
         )
         try:
-            await call.answer("Сброс не выполнен", show_alert=True)
+            await call.answer("Трафик сброшен")
         except TelegramBadRequest:
             pass
-        return
-
-    user.balance -= TRAFFIC_RESET_PRICE
-    session.add(
-        BalanceLedger(
-            user_id=user.id,
-            amount=-TRAFFIC_RESET_PRICE,
-            reason="subscription_traffic_reset",
-        )
-    )
-    await session.commit()
-    invalidate_usage_cache(user, active_sub)
-
-    await _edit_only(
-        call.message,
-        "✅ Трафик успешно сброшен.\n"
-        f"Списано: <b>{TRAFFIC_RESET_PRICE} ₽</b>\n"
-        f"Текущий баланс: <b>{user.balance} ₽</b>",
-        reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
-    )
-    try:
-        await call.answer("Трафик сброшен")
-    except TelegramBadRequest:
-        pass
 
 
 @router.callback_query(F.data.startswith("sub_gb_"))
@@ -564,15 +577,16 @@ async def subscription_pick_gb(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("Некорректный объем.", show_alert=True)
         return
 
-    await _set_constructor_selection(
-        state,
-        traffic_gb=traffic_gb,
-    )
-    await _render_configurator(
-        call.message,
-        state,
-        with_banner=False,
-    )
+    async with _get_subscription_lock(call.from_user.id):
+        await _set_constructor_selection(
+            state,
+            traffic_gb=traffic_gb,
+        )
+        await _render_configurator(
+            call.message,
+            state,
+            with_banner=False,
+        )
     await call.answer()
 
 
@@ -588,15 +602,16 @@ async def subscription_pick_term(call: CallbackQuery, state: FSMContext) -> None
         await call.answer("Некорректный срок.", show_alert=True)
         return
 
-    await _set_constructor_selection(
-        state,
-        term_months=term_months,
-    )
-    await _render_configurator(
-        call.message,
-        state,
-        with_banner=False,
-    )
+    async with _get_subscription_lock(call.from_user.id):
+        await _set_constructor_selection(
+            state,
+            term_months=term_months,
+        )
+        await _render_configurator(
+            call.message,
+            state,
+            with_banner=False,
+        )
     await call.answer()
 
 
@@ -612,167 +627,172 @@ async def subscription_pick_devices(call: CallbackQuery, state: FSMContext) -> N
         await call.answer("Некорректный лимит устройств.", show_alert=True)
         return
 
-    await _set_constructor_selection(
-        state,
-        device_limit=device_limit,
-    )
-    await _render_configurator(
-        call.message,
-        state,
-        with_banner=False,
-    )
+    async with _get_subscription_lock(call.from_user.id):
+        await _set_constructor_selection(
+            state,
+            device_limit=device_limit,
+        )
+        await _render_configurator(
+            call.message,
+            state,
+            with_banner=False,
+        )
     await call.answer()
 
 
 @router.callback_query(F.data == "sub_promo_enter")
 async def subscription_promo_enter(call: CallbackQuery, state: FSMContext) -> None:
-    traffic_gb, term_months, device_limit = _get_constructor_selection(await state.get_data())
-    missing_text = _build_missing_constructor_text(traffic_gb, term_months, device_limit)
-    if missing_text:
-        await call.answer(f"Сначала завершите выбор. {missing_text}", show_alert=True)
-        return
-    await state.set_state(SubscriptionStates.waiting_promo_code)
-    screen = await _edit_only(call.message, "Введите промокод для подписки:")
-    await _store_subscription_screen_refs(state, screen or call.message)
+    async with _get_subscription_lock(call.from_user.id):
+        traffic_gb, term_months, device_limit = _get_constructor_selection(await state.get_data())
+        missing_text = _build_missing_constructor_text(traffic_gb, term_months, device_limit)
+        if missing_text:
+            await call.answer(f"Сначала завершите выбор. {missing_text}", show_alert=True)
+            return
+        await state.set_state(SubscriptionStates.waiting_promo_code)
+        screen = await _edit_only(call.message, "Введите промокод для подписки:")
+        await _store_subscription_screen_refs(state, screen or call.message)
     await call.answer()
 
 
 @router.callback_query(F.data == "sub_promo_clear")
 async def subscription_promo_clear(call: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
-    await _render_configurator(
-        call.message,
-        state,
-        with_banner=False,
-    )
+    async with _get_subscription_lock(call.from_user.id):
+        await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
+        await _render_configurator(
+            call.message,
+            state,
+            with_banner=False,
+        )
     await call.answer("Промокод удален")
 
 
 @router.message(SubscriptionStates.waiting_promo_code)
 async def subscription_promo_apply(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    code = (message.text or "").strip().upper()
-    data = await state.get_data()
-    traffic_gb, term_months, device_limit = _get_constructor_selection(data)
-    if traffic_gb is None or term_months is None or device_limit is None:
-        await state.clear()
-        await message.answer("Сессия истекла. Откройте подписку заново.")
-        return
-    base_price = _calculate_price(traffic_gb, term_months, device_limit)
-    if base_price is None:
-        await state.set_state(None)
-        await message.answer("Не удалось рассчитать цену для этой конфигурации.")
-        return
+    async with _get_subscription_lock(message.from_user.id):
+        code = (message.text or "").strip().upper()
+        data = await state.get_data()
+        traffic_gb, term_months, device_limit = _get_constructor_selection(data)
+        if traffic_gb is None or term_months is None or device_limit is None:
+            await state.clear()
+            await message.answer("Сессия истекла. Откройте подписку заново.")
+            return
+        base_price = _calculate_price(traffic_gb, term_months, device_limit)
+        if base_price is None:
+            await state.set_state(None)
+            await message.answer("Не удалось рассчитать цену для этой конфигурации.")
+            return
 
-    service = PromoService(PromoRepository(session), UserRepository(session))
-    try:
-        final_price, promo = await service.validate_and_apply(
-            code=code,
-            user_id=message.from_user.id,
-            base_amount=base_price,
-            target=PromoTarget.subscription,
+        service = PromoService(PromoRepository(session), UserRepository(session))
+        try:
+            final_price, promo = await service.validate_and_apply(
+                code=code,
+                user_id=message.from_user.id,
+                base_amount=base_price,
+                target=PromoTarget.subscription,
+            )
+        except ValueError as exc:
+            chat_id = int(data.get("sub_chat_id", 0))
+            message_id = int(data.get("sub_message_id", 0))
+            error_text = (
+                f"❌ {_safe_error_text(exc)}\n\n"
+                "Введите другой промокод или вернитесь назад к настройке подписки."
+            )
+            if chat_id and message_id:
+                refs = await _edit_only_by_ids(message.bot, chat_id, message_id, error_text)
+                await _store_subscription_screen_refs_by_ids(state, refs)
+            else:
+                sent = await message.answer(error_text)
+                await _store_subscription_screen_refs(state, sent)
+            return
+
+        await state.set_state(None)
+        await state.update_data(
+            sub_promo_code=promo.code if promo else "",
+            sub_promo_id=promo.id if promo else None,
+            sub_promo_final_price=str(final_price),
         )
-    except ValueError as exc:
         chat_id = int(data.get("sub_chat_id", 0))
         message_id = int(data.get("sub_message_id", 0))
-        error_text = (
-            f"❌ {_safe_error_text(exc)}\n\n"
-            "Введите другой промокод или вернитесь назад к настройке подписки."
-        )
         if chat_id and message_id:
-            refs = await _edit_only_by_ids(message.bot, chat_id, message_id, error_text)
-            await _store_subscription_screen_refs_by_ids(state, refs)
+            await _render_configurator_by_ids(
+                message.bot,
+                state,
+                chat_id=chat_id,
+                message_id=message_id,
+            )
         else:
-            sent = await message.answer(error_text)
+            text, keyboard = await _build_configurator_view(state)
+            sent = await message.answer(text, reply_markup=keyboard)
             await _store_subscription_screen_refs(state, sent)
-        return
-
-    await state.set_state(None)
-    await state.update_data(
-        sub_promo_code=promo.code if promo else "",
-        sub_promo_id=promo.id if promo else None,
-        sub_promo_final_price=str(final_price),
-    )
-    chat_id = int(data.get("sub_chat_id", 0))
-    message_id = int(data.get("sub_message_id", 0))
-    if chat_id and message_id:
-        await _render_configurator_by_ids(
-            message.bot,
-            state,
-            chat_id=chat_id,
-            message_id=message_id,
-        )
-    else:
-        text, keyboard = await _build_configurator_view(state)
-        sent = await message.answer(text, reply_markup=keyboard)
-        await _store_subscription_screen_refs(state, sent)
 
 
 @router.callback_query(F.data == "sub_pay")
 async def subscription_pay(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    data = await state.get_data()
-    traffic_gb, term_months, device_limit = _get_constructor_selection(data)
+    async with _get_subscription_lock(call.from_user.id):
+        data = await state.get_data()
+        traffic_gb, term_months, device_limit = _get_constructor_selection(data)
 
-    missing_text = _build_missing_constructor_text(traffic_gb, term_months, device_limit)
-    if missing_text:
-        await call.answer(f"Не хватает параметров. {missing_text}", show_alert=True)
-        return
-
-    base_price = _calculate_price(traffic_gb, term_months, device_limit)
-    if base_price is None:
-        await call.answer("Цена для этой конфигурации не найдена.", show_alert=True)
-        return
-
-    price = base_price
-    promo_id = data.get("sub_promo_id")
-    promo_code = data.get("sub_promo_code")
-    if promo_code:
-        promo_service = PromoService(PromoRepository(session), UserRepository(session))
-        try:
-            price, promo = await promo_service.validate_and_apply(
-                code=str(promo_code),
-                user_id=call.from_user.id,
-                base_amount=base_price,
-                target=PromoTarget.subscription,
-            )
-            promo_id = promo.id if promo else None
-        except ValueError as exc:
-            await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
-            await _render_configurator(call.message, state, with_banner=False)
-            await call.answer("Промокод сброшен", show_alert=True)
+        missing_text = _build_missing_constructor_text(traffic_gb, term_months, device_limit)
+        if missing_text:
+            await call.answer(f"Не хватает параметров. {missing_text}", show_alert=True)
             return
 
-    duration_days = DURATION_MONTH_TO_DAYS[term_months]
+        base_price = _calculate_price(traffic_gb, term_months, device_limit)
+        if base_price is None:
+            await call.answer("Цена для этой конфигурации не найдена.", show_alert=True)
+            return
 
-    try:
-        await call.answer("Обрабатываю оплату...")
-    except TelegramBadRequest:
-        pass
+        price = base_price
+        promo_id = data.get("sub_promo_id")
+        promo_code = data.get("sub_promo_code")
+        if promo_code:
+            promo_service = PromoService(PromoRepository(session), UserRepository(session))
+            try:
+                price, promo = await promo_service.validate_and_apply(
+                    code=str(promo_code),
+                    user_id=call.from_user.id,
+                    base_amount=base_price,
+                    target=PromoTarget.subscription,
+                )
+                promo_id = promo.id if promo else None
+            except ValueError:
+                await state.update_data(sub_promo_code="", sub_promo_id=None, sub_promo_final_price="")
+                await _render_configurator(call.message, state, with_banner=False)
+                await call.answer("Промокод сброшен", show_alert=True)
+                return
 
-    try:
-        await _finish_purchase(
-            call.message,
-            call.from_user.id,
-            state,
-            session,
-            traffic_gb=traffic_gb,
-            duration_days=duration_days,
-            device_limit=device_limit,
-            final_price=price,
-            promo_id=int(promo_id) if promo_id else None,
-        )
-    except ValueError as exc:
-        await _edit_only(
-            call.message,
-            f"❌ {_safe_error_text(exc)}\n\nПроверьте настройки API в .env и попробуйте снова.",
-            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, device_limit, has_promo=bool(promo_code)),
-        )
-    except Exception:
-        logger.exception("Unexpected error while finishing subscription purchase")
-        await _edit_only(
-            call.message,
-            "❌ Ошибка при оформлении подписки. Попробуйте еще раз через минуту.",
-            reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, device_limit, has_promo=bool(promo_code)),
-        )
+        duration_days = DURATION_MONTH_TO_DAYS[term_months]
+
+        try:
+            await call.answer("Обрабатываю оплату...")
+        except TelegramBadRequest:
+            pass
+
+        try:
+            await _finish_purchase(
+                call.message,
+                call.from_user.id,
+                state,
+                session,
+                traffic_gb=traffic_gb,
+                duration_days=duration_days,
+                device_limit=device_limit,
+                final_price=price,
+                promo_id=int(promo_id) if promo_id else None,
+            )
+        except ValueError as exc:
+            await _edit_only(
+                call.message,
+                f"❌ {_safe_error_text(exc)}\n\nПроверьте настройки API в .env и попробуйте снова.",
+                reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, device_limit, has_promo=bool(promo_code)),
+            )
+        except Exception:
+            logger.exception("Unexpected error while finishing subscription purchase")
+            await _edit_only(
+                call.message,
+                "❌ Ошибка при оформлении подписки. Попробуйте еще раз через минуту.",
+                reply_markup=subscription_configurator_keyboard(traffic_gb, term_months, device_limit, has_promo=bool(promo_code)),
+            )
 
 
 async def _finish_purchase(
