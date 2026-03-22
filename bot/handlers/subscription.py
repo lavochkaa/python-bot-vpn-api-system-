@@ -45,7 +45,7 @@ DEFAULT_BUILD_PRESET = "max"
 TRAFFIC_RESET_PRICE = Decimal("79")
 
 
-async def _edit_only(message: Message, text: str, reply_markup=None) -> None:
+async def _edit_only(message: Message, text: str, reply_markup=None) -> Message | None:
     rendered = _short_text(text)
 
     async def _try_edit_text(payload: str) -> bool:
@@ -74,30 +74,30 @@ async def _edit_only(message: Message, text: str, reply_markup=None) -> None:
 
     # text messages
     if await _try_edit_text(rendered):
-        return
+        return message
 
     # media messages (photo/video with caption)
     if await _try_edit_caption(rendered):
-        return
+        return message
 
     # entity-safe retry in plain text/caption
     safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
     safe_rendered = _short_text(safe_plain)
 
     if await _try_edit_text(safe_rendered):
-        return
+        return message
     if await _try_edit_caption(safe_rendered):
-        return
+        return message
 
     try:
-        await message.answer(safe_rendered, reply_markup=reply_markup)
+        return await message.answer(safe_rendered, reply_markup=reply_markup)
     except TelegramBadRequest:
-        return
+        return None
     except TelegramNetworkError:
-        return
+        return None
 
 
-async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply_markup=None) -> None:
+async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply_markup=None) -> tuple[int, int] | None:
     rendered = _short_text(text)
     try:
         await bot.edit_message_text(
@@ -106,13 +106,13 @@ async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply
             text=rendered,
             reply_markup=reply_markup,
         )
-        return
+        return chat_id, message_id
     except TelegramBadRequest as exc:
         err = str(exc).lower()
         if "message is not modified" in err:
-            return
+            return chat_id, message_id
     except TelegramNetworkError:
-        return
+        return None
 
     try:
         await bot.edit_message_caption(
@@ -121,13 +121,13 @@ async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply
             caption=rendered,
             reply_markup=reply_markup,
         )
-        return
+        return chat_id, message_id
     except TelegramBadRequest as exc:
         err = str(exc).lower()
         if "message is not modified" in err:
-            return
+            return chat_id, message_id
     except TelegramNetworkError:
-        return
+        return None
 
     safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
     safe_rendered = _short_text(safe_plain)
@@ -138,11 +138,11 @@ async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply
             text=safe_rendered,
             reply_markup=reply_markup,
         )
-        return
+        return chat_id, message_id
     except TelegramBadRequest:
         pass
     except TelegramNetworkError:
-        return
+        return None
     try:
         await bot.edit_message_caption(
             chat_id=chat_id,
@@ -150,8 +150,41 @@ async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply
             caption=safe_rendered,
             reply_markup=reply_markup,
         )
+        return chat_id, message_id
     except (TelegramBadRequest, TelegramNetworkError):
+        pass
+
+    try:
+        sent = await bot.send_message(
+            chat_id=chat_id,
+            text=safe_rendered,
+            reply_markup=reply_markup,
+        )
+        return sent.chat.id, sent.message_id
+    except (TelegramBadRequest, TelegramNetworkError):
+        return None
+
+
+async def _store_subscription_screen_refs(state: FSMContext, screen: Message | None) -> None:
+    if screen is None:
         return
+    await state.update_data(
+        sub_chat_id=screen.chat.id,
+        sub_message_id=screen.message_id,
+    )
+
+
+async def _store_subscription_screen_refs_by_ids(
+    state: FSMContext,
+    refs: tuple[int, int] | None,
+) -> None:
+    if refs is None:
+        return
+    chat_id, message_id = refs
+    await state.update_data(
+        sub_chat_id=chat_id,
+        sub_message_id=message_id,
+    )
 
 
 def _safe_error_text(exc: Exception) -> str:
@@ -292,8 +325,6 @@ async def _render_configurator(
         sub_traffic_gb=traffic_gb,
         sub_term_months=term_months,
         sub_device_limit=device_limit,
-        sub_chat_id=target.chat.id,
-        sub_message_id=target.message_id,
         plan_type=DEFAULT_PLAN_TYPE,
         plan_slug=DEFAULT_PLAN_SLUG,
         build_preset=DEFAULT_BUILD_PRESET,
@@ -317,7 +348,8 @@ async def _render_configurator(
         has_promo=bool(promo_code),
     )
     _ = with_banner
-    await _edit_only(target, text, reply_markup=keyboard)
+    screen = await _edit_only(target, text, reply_markup=keyboard)
+    await _store_subscription_screen_refs(state, screen or target)
 
 
 @router.callback_query(F.data == "menu:subscription")
@@ -570,7 +602,8 @@ async def subscription_promo_enter(call: CallbackQuery, state: FSMContext) -> No
         await call.answer("Сначала выберите объем, срок и устройства.", show_alert=True)
         return
     await state.set_state(SubscriptionStates.waiting_promo_code)
-    await _edit_only(call.message, "Введите промокод для подписки:")
+    screen = await _edit_only(call.message, "Введите промокод для подписки:")
+    await _store_subscription_screen_refs(state, screen or call.message)
     await call.answer()
 
 
@@ -621,9 +654,11 @@ async def subscription_promo_apply(message: Message, state: FSMContext, session:
         chat_id = int(data.get("sub_chat_id", 0))
         message_id = int(data.get("sub_message_id", 0))
         if chat_id and message_id:
-            await _edit_only_by_ids(message.bot, chat_id, message_id, f"❌ {exc}")
+            refs = await _edit_only_by_ids(message.bot, chat_id, message_id, f"❌ {exc}")
+            await _store_subscription_screen_refs_by_ids(state, refs)
         else:
-            await message.answer(f"❌ {exc}")
+            sent = await message.answer(f"❌ {exc}")
+            await _store_subscription_screen_refs(state, sent)
         return
 
     await state.set_state(None)
@@ -643,9 +678,11 @@ async def subscription_promo_apply(message: Message, state: FSMContext, session:
     )
     kb = subscription_configurator_keyboard(traffic_gb, term_months, device_limit, has_promo=bool(promo))
     if chat_id and message_id:
-        await _edit_only_by_ids(message.bot, chat_id, message_id, text, reply_markup=kb)
+        refs = await _edit_only_by_ids(message.bot, chat_id, message_id, text, reply_markup=kb)
+        await _store_subscription_screen_refs_by_ids(state, refs)
     else:
-        await message.answer(text, reply_markup=kb)
+        sent = await message.answer(text, reply_markup=kb)
+        await _store_subscription_screen_refs(state, sent)
 
 
 @router.callback_query(F.data == "sub_pay")

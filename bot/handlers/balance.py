@@ -1,6 +1,9 @@
 from decimal import Decimal, InvalidOperation
+import html
+import re
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,9 +25,146 @@ from bot.repositories.user import UserRepository
 from bot.services.payment import PaymentService
 from bot.services.promo import PromoService
 from bot.states.balance import TopUpStates
-from bot.utils.messages import edit_or_send, edit_or_send_banner, send_or_answer
+from bot.utils.messages import _short_text, edit_or_send, edit_or_send_banner, send_or_answer
 
 router = Router()
+
+
+async def _edit_only(message: Message, text: str, reply_markup=None) -> None:
+    rendered = _short_text(text)
+
+    async def _try_edit_text(payload: str) -> bool:
+        try:
+            await message.edit_text(payload, reply_markup=reply_markup)
+            return True
+        except TelegramBadRequest as exc:
+            err = str(exc).lower()
+            if "message is not modified" in err:
+                return True
+            return False
+        except TelegramNetworkError:
+            return False
+
+    async def _try_edit_caption(payload: str) -> bool:
+        try:
+            await message.edit_caption(caption=payload, reply_markup=reply_markup)
+            return True
+        except TelegramBadRequest as exc:
+            err = str(exc).lower()
+            if "message is not modified" in err:
+                return True
+            return False
+        except TelegramNetworkError:
+            return False
+
+    if await _try_edit_text(rendered):
+        return
+    if await _try_edit_caption(rendered):
+        return
+
+    safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
+    safe_rendered = _short_text(safe_plain)
+
+    if await _try_edit_text(safe_rendered):
+        return
+    if await _try_edit_caption(safe_rendered):
+        return
+
+    try:
+        await message.answer(safe_rendered, reply_markup=reply_markup)
+    except (TelegramBadRequest, TelegramNetworkError):
+        return
+
+
+async def _edit_only_by_ids(bot, chat_id: int, message_id: int, text: str, reply_markup=None) -> None:
+    rendered = _short_text(text)
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=rendered,
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            return
+    except TelegramNetworkError:
+        return
+
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=message_id,
+            caption=rendered,
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest as exc:
+        err = str(exc).lower()
+        if "message is not modified" in err:
+            return
+    except TelegramNetworkError:
+        return
+
+    safe_plain = html.escape(re.sub(r"<[^>]+>", "", text))
+    safe_rendered = _short_text(safe_plain)
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=safe_rendered,
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest:
+        pass
+    except TelegramNetworkError:
+        return
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=message_id,
+            caption=safe_rendered,
+            reply_markup=reply_markup,
+        )
+    except (TelegramBadRequest, TelegramNetworkError):
+        return
+
+
+async def _render_amount_picker(message: Message, state: FSMContext) -> None:
+    await state.update_data(
+        topup_chat_id=message.chat.id,
+        topup_message_id=message.message_id,
+    )
+    await _edit_only(
+        message,
+        "Выберите сумму пополнения:",
+        reply_markup=amount_keyboard(),
+    )
+
+
+async def _render_custom_amount_prompt(message: Message, state: FSMContext) -> None:
+    await state.update_data(
+        topup_chat_id=message.chat.id,
+        topup_message_id=message.message_id,
+    )
+    await _edit_only(
+        message,
+        "Введите сумму пополнения в рублях:",
+        reply_markup=custom_amount_keyboard(),
+    )
+
+
+async def _edit_topup_screen(state: FSMContext, message: Message, text: str, reply_markup=None) -> None:
+    data = await state.get_data()
+    chat_id = int(data.get("topup_chat_id", 0) or 0)
+    message_id = int(data.get("topup_message_id", 0) or 0)
+    if chat_id and message_id:
+        await _edit_only_by_ids(message.bot, chat_id, message_id, text, reply_markup=reply_markup)
+        return
+    await send_or_answer(message, text, reply_markup=reply_markup)
 
 
 def _promo_line(data: dict) -> str:
@@ -54,7 +194,11 @@ async def _render_topup_preview(message: Message, state: FSMContext) -> None:
     base_amount = Decimal(str(data.get("topup_base_amount", "0")))
     final_amount = Decimal(str(data.get("topup_final_amount", "0")))
     promo_code = data.get("topup_promo_code")
-    await edit_or_send(
+    await state.update_data(
+        topup_chat_id=message.chat.id,
+        topup_message_id=message.message_id,
+    )
+    await _edit_only(
         message,
         _topup_preview_text(base_amount, final_amount, promo_code),
         reply_markup=topup_preview_keyboard(has_promo=bool(promo_code)),
@@ -77,11 +221,7 @@ async def balance_menu(call: CallbackQuery, session: AsyncSession, state: FSMCon
 @router.callback_query(F.data == "balance:topup")
 async def ask_amount(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await edit_or_send(
-        call.message,
-        "Выберите сумму пополнения:",
-        reply_markup=amount_keyboard(),
-    )
+    await _render_amount_picker(call.message, state)
     await call.answer()
 
 
@@ -90,11 +230,7 @@ async def process_amount_callback(call: CallbackQuery, state: FSMContext) -> Non
     amount_token = call.data.split(":")[-1]
     if amount_token == "custom":
         await state.set_state(TopUpStates.waiting_custom_amount)
-        await edit_or_send(
-            call.message,
-            "Введите сумму пополнения в рублях:",
-            reply_markup=custom_amount_keyboard(),
-        )
+        await _render_custom_amount_prompt(call.message, state)
         await call.answer()
         return
 
@@ -112,11 +248,13 @@ async def process_amount_callback(call: CallbackQuery, state: FSMContext) -> Non
 @router.message(TopUpStates.waiting_custom_amount)
 async def process_custom_amount(message: Message, state: FSMContext) -> None:
     try:
-        amount = Decimal(message.text.strip().replace(",", "."))
+        raw_text = (message.text or "").strip()
+        amount = Decimal(raw_text.replace(",", "."))
         if amount <= 0:
             raise ValueError
     except (InvalidOperation, ValueError):
-        await send_or_answer(
+        await _edit_topup_screen(
+            state,
             message,
             "❌ Введите корректную сумму, например <b>100</b>.",
             reply_markup=custom_amount_keyboard(),
@@ -130,7 +268,8 @@ async def process_custom_amount(message: Message, state: FSMContext) -> None:
         topup_promo_code="",
         topup_promo_id=None,
     )
-    await send_or_answer(
+    await _edit_topup_screen(
+        state,
         message,
         _topup_preview_text(amount, amount, None),
         reply_markup=topup_preview_keyboard(has_promo=False),
@@ -144,7 +283,11 @@ async def topup_promo_enter(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("Сначала выберите сумму пополнения.", show_alert=True)
         return
     await state.set_state(TopUpStates.waiting_promo_code)
-    await edit_or_send(call.message, "Введите промокод для пополнения:", reply_markup=custom_amount_keyboard())
+    await _edit_only(call.message, "Введите промокод для пополнения:", reply_markup=custom_amount_keyboard())
+    await state.update_data(
+        topup_chat_id=call.message.chat.id,
+        topup_message_id=call.message.message_id,
+    )
     await call.answer()
 
 
@@ -172,11 +315,11 @@ async def topup_promo_apply(message: Message, state: FSMContext, session: AsyncS
     base_raw = data.get("topup_base_amount")
     if not base_raw:
         await state.clear()
-        await send_or_answer(message, "Сессия истекла. Начните пополнение заново.")
+        await _edit_topup_screen(state, message, "Сессия истекла. Начните пополнение заново.")
         return
 
     if not code:
-        await send_or_answer(message, "Введите промокод.")
+        await _edit_topup_screen(state, message, "Введите промокод.")
         return
 
     base_amount = Decimal(str(base_raw))
@@ -189,7 +332,7 @@ async def topup_promo_apply(message: Message, state: FSMContext, session: AsyncS
             target=PromoTarget.balance,
         )
     except ValueError as exc:
-        await send_or_answer(message, f"❌ {exc}")
+        await _edit_topup_screen(state, message, f"❌ {exc}", reply_markup=custom_amount_keyboard())
         return
 
     await state.set_state(None)
@@ -199,7 +342,8 @@ async def topup_promo_apply(message: Message, state: FSMContext, session: AsyncS
         topup_promo_id=promo.id if promo else None,
     )
 
-    await send_or_answer(
+    await _edit_topup_screen(
+        state,
         message,
         _topup_preview_text(base_amount, final_amount, promo.code if promo else None),
         reply_markup=topup_preview_keyboard(has_promo=bool(promo)),
