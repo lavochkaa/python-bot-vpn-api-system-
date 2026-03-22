@@ -187,13 +187,13 @@ def test_get_connected_devices_accepts_plausible_query_payload_without_owner_fie
     ]
 
 
-def test_pick_default_internal_squad_uuid_prefers_default_flag() -> None:
+def test_pick_default_internal_squad_uuid_prefers_lowest_view_position() -> None:
     client = _client()
 
     payload = {
         "internalSquads": [
-            {"uuid": "squad-a", "isDefault": False},
-            {"uuid": "squad-b", "isDefault": True},
+            {"uuid": "squad-a", "viewPosition": 20},
+            {"uuid": "squad-b", "viewPosition": 10},
         ]
     }
 

@@ -726,6 +726,19 @@ class VpnApiClient:
         if not candidates:
             return None
 
+        positioned_candidates: list[tuple[int, str]] = []
+        for item in candidates:
+            squad_uuid = self._extract_internal_squad_uuid(item)
+            if not squad_uuid:
+                continue
+            view_position = self._to_int(item.get("viewPosition"))
+            if view_position is not None:
+                positioned_candidates.append((view_position, squad_uuid))
+
+        if positioned_candidates:
+            positioned_candidates.sort(key=lambda item: item[0])
+            return positioned_candidates[0][1]
+
         for item in candidates:
             if any(
                 bool(item.get(key))
