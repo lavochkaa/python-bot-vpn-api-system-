@@ -215,3 +215,22 @@ class AppSetting(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     value: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TrackedServer(Base):
+    __tablename__ = "tracked_servers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    ip: Mapped[str] = mapped_column(String(64), nullable=False)
+    panel_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    api_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    account_balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"), server_default="0")
+    next_payment_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    monthly_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"), server_default="0")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_status: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

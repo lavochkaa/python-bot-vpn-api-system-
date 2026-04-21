@@ -12,6 +12,7 @@ def admin_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="📢 Оповестить всех", callback_data="admin:broadcast")
     builder.button(text="🛠 Техработы", callback_data="admin:maintenance")
     builder.button(text="📊 Статистика", callback_data="admin:stats")
+    builder.button(text="🖥 Серверы", callback_data="admin:servers")
     builder.button(text="🔙 В меню", callback_data="menu:main")
     builder.adjust(1)
     return builder.as_markup()
@@ -166,5 +167,48 @@ def admin_promo_delete_confirm_keyboard(promo_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Да, удалить", callback_data=f"admin:promo:delete:confirm:{promo_id}")
     builder.button(text="❌ Нет", callback_data=f"admin:promo:view:{promo_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_servers_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Добавить сервер", callback_data="admin:servers:add")
+    builder.button(text="📋 Список серверов", callback_data="admin:servers:list")
+    builder.button(text="💹 Бухгалтерия", callback_data="admin:servers:finance")
+    builder.button(text="🔙 Назад", callback_data="admin:menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_server_list_keyboard(servers: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for server in servers:
+        status_icon = {"online": "🟢", "offline": "🔴"}.get(server.last_status, "⚪")
+        builder.button(
+            text=f"{status_icon} {server.name} ({server.ip})",
+            callback_data=f"admin:server:view:{server.id}",
+        )
+    builder.button(text="🔙 Назад", callback_data="admin:servers")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_server_view_keyboard(server_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔄 Проверить статус", callback_data=f"admin:server:check:{server_id}")
+    builder.button(text="💰 Обновить баланс", callback_data=f"admin:server:edit:balance:{server_id}")
+    builder.button(text="📅 Дата следующей оплаты", callback_data=f"admin:server:edit:paydate:{server_id}")
+    builder.button(text="💵 Стоимость/мес", callback_data=f"admin:server:edit:cost:{server_id}")
+    builder.button(text="🗑 Удалить сервер", callback_data=f"admin:server:delete:{server_id}")
+    builder.button(text="🔙 К списку", callback_data="admin:servers:list")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_server_delete_confirm_keyboard(server_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, удалить", callback_data=f"admin:server:delete:confirm:{server_id}")
+    builder.button(text="❌ Нет", callback_data=f"admin:server:view:{server_id}")
     builder.adjust(1)
     return builder.as_markup()
