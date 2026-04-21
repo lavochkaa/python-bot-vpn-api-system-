@@ -7,11 +7,12 @@ import logging
 from bot.providers.hosting.base import HostingProviderClient
 from bot.providers.hosting.beget import BegetClient
 from bot.providers.hosting.manual import ManualClient
+from bot.providers.hosting.play2go import Play2goClient
 from bot.providers.hosting.yandex_cloud import YandexCloudClient
 
 logger = logging.getLogger(__name__)
 
-_MANUAL_TYPES = {"firstbyte", "play2go", "manual"}
+_MANUAL_TYPES = {"firstbyte", "manual"}
 
 
 def build_hosting_client(server) -> HostingProviderClient | None:
@@ -50,6 +51,15 @@ def build_hosting_client(server) -> HostingProviderClient | None:
             api_key=api_key,
             billing_account_id=billing_account_id,
         )
+
+    if provider_type == "play2go":
+        api_token = server.provider_secret or server.provider_login or ""
+        if not api_token:
+            logger.warning("Server %s (id=%s): Play2go token missing", server.name, server.id)
+            return None
+        # provider_login can store the pterodactyl server identifier
+        server_identifier = server.provider_login if server.provider_login != api_token else None
+        return Play2goClient(api_token=api_token, server_identifier=server_identifier)
 
     if provider_type in _MANUAL_TYPES:
         return ManualClient()

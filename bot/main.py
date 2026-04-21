@@ -49,11 +49,16 @@ async def main() -> None:
     dp.include_router(admin.router)
     dp.include_router(admin_servers.router)
 
-    # Start background server monitoring (checks every 30 min)
-    asyncio.create_task(run_server_monitor(bot, AsyncSessionFactory))
-
     logger.info("Starting bot polling...")
-    await dp.start_polling(bot, skip_updates=True)
+    monitor_task = asyncio.create_task(run_server_monitor(bot, AsyncSessionFactory))
+    try:
+        await dp.start_polling(bot, skip_updates=True)
+    finally:
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":
