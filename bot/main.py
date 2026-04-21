@@ -10,6 +10,7 @@ from bot.middlewares.db import DbSessionMiddleware
 from bot.middlewares.auth import ChannelSubscriptionMiddleware
 from bot.handlers import common, balance, subscription, keys, info, support, admin, admin_servers
 from bot.repositories.plan import PlanRepository
+from bot.services.server_monitor import run_server_monitor
 
 
 def setup_logging() -> None:
@@ -47,6 +48,9 @@ async def main() -> None:
     dp.include_router(support.router)
     dp.include_router(admin.router)
     dp.include_router(admin_servers.router)
+
+    # Start background server monitoring (checks every 30 min)
+    asyncio.create_task(run_server_monitor(bot, AsyncSessionFactory))
 
     logger.info("Starting bot polling...")
     await dp.start_polling(bot, skip_updates=True)

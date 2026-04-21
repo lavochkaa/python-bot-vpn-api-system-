@@ -31,3 +31,6 @@ class AdminTicketStates(StatesGroup):
     waiting_server_edit_balance = State()
     waiting_server_edit_payment_date = State()
     waiting_server_edit_monthly_cost = State()
+    waiting_server_provider_login = State()
+    waiting_server_provider_secret = State()
+    waiting_server_provider_extra = State()

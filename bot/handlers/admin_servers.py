@@ -17,6 +17,7 @@ from bot.keyboards.admin import (
     admin_back_keyboard,
     admin_server_delete_confirm_keyboard,
     admin_server_list_keyboard,
+    admin_server_provider_type_keyboard,
     admin_server_view_keyboard,
     admin_servers_keyboard,
 )
@@ -471,21 +472,133 @@ async def admin_server_add_panel_url(message: Message, state: FSMContext) -> Non
     raw = (message.text or "").strip()
     panel_url = None if raw in {"-", "—", "нет"} else raw
     await state.update_data(server_panel_url=panel_url or "")
-    await state.set_state(AdminTicketStates.waiting_server_provider)
     await message.answer(
-        "Шаг 4/5. Введите название провайдера (например: Timeweb, Hetzner) или '-':",
-        reply_markup=admin_back_keyboard(),
+        "Шаг 4/5. Выберите тип хостинг-провайдера:",
+        reply_markup=admin_server_provider_type_keyboard(),
     )
 
 
-@router.message(AdminTicketStates.waiting_server_provider)
-async def admin_server_add_provider(message: Message, state: FSMContext) -> None:
+# ── Provider type selection (callback, no FSM state) ──────────────────────────
+
+_PROVIDERS_WITH_CREDENTIALS = {
+    "beget": (
+        "Введите логин Beget-аккаунта:",
+        "Введите пароль Beget-аккаунта:",
+        None,  # no extra step
+    ),
+    "yandex_cloud": (
+        "Введите folder_id (Yandex Cloud):",
+        "Введите API-ключ (Yandex Cloud):",
+        "Введите billing_account_id (или '-' чтобы пропустить):",
+    ),
+}
+
+_PROVIDERS_NO_CREDENTIALS = {"firstbyte", "play2go", "manual"}
+
+
+@router.callback_query(F.data.startswith("admin:server:provider:"))
+async def admin_server_provider_chosen(call: CallbackQuery, state: FSMContext) -> None:
+    if not _is_admin(call.from_user.id):
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    # Only handle when we're in the wizard (panel_url step just finished, no active FSM state)
+    data = await state.get_data()
+    # Require that we already have server_name (i.e. wizard is in progress)
+    if not data.get("server_name"):
+        await call.answer("Сначала начните добавление сервера.", show_alert=True)
+        return
+
+    provider_type = call.data.split(":")[-1]  # beget / yandex_cloud / firstbyte / play2go / manual
+    await state.update_data(server_provider_type=provider_type)
+
+    if provider_type in _PROVIDERS_WITH_CREDENTIALS:
+        login_prompt, _, _ = _PROVIDERS_WITH_CREDENTIALS[provider_type]
+        await state.set_state(AdminTicketStates.waiting_server_provider_login)
+        await call.message.answer(login_prompt, reply_markup=admin_back_keyboard())
+    else:
+        # manual / firstbyte / play2go — skip credentials, go straight to monthly cost
+        await state.update_data(
+            server_provider_login=None,
+            server_provider_secret=None,
+            server_provider_extra=None,
+        )
+        await state.set_state(AdminTicketStates.waiting_server_monthly_cost)
+        await call.message.answer(
+            "Шаг 5/5. Введите стоимость сервера в месяц в ₽ (или '0' если неизвестно):",
+            reply_markup=admin_back_keyboard(),
+        )
+
+    await call.answer()
+
+
+@router.message(AdminTicketStates.waiting_server_provider_login)
+async def admin_server_provider_login(message: Message, state: FSMContext) -> None:
     if not _is_admin(message.from_user.id):
         await state.clear()
         return
+    login = (message.text or "").strip()
+    if not login:
+        await message.answer("Логин не может быть пустым.", reply_markup=admin_back_keyboard())
+        return
+    await state.update_data(server_provider_login=login)
+
+    data = await state.get_data()
+    provider_type = data.get("server_provider_type", "")
+    _, password_prompt, extra_prompt = _PROVIDERS_WITH_CREDENTIALS.get(
+        provider_type, ("", "Введите пароль/секрет:", None)
+    )
+    await state.set_state(AdminTicketStates.waiting_server_provider_secret)
+    await message.answer(password_prompt or "Введите пароль/секрет:", reply_markup=admin_back_keyboard())
+
+
+@router.message(AdminTicketStates.waiting_server_provider_secret)
+async def admin_server_provider_secret(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        return
+    secret = (message.text or "").strip()
+    if not secret:
+        await message.answer("Секрет/пароль не может быть пустым.", reply_markup=admin_back_keyboard())
+        return
+    await state.update_data(server_provider_secret=secret)
+
+    data = await state.get_data()
+    provider_type = data.get("server_provider_type", "")
+    _, _, extra_prompt = _PROVIDERS_WITH_CREDENTIALS.get(provider_type, ("", "", None))
+
+    if extra_prompt:
+        await state.set_state(AdminTicketStates.waiting_server_provider_extra)
+        await message.answer(extra_prompt, reply_markup=admin_back_keyboard())
+    else:
+        await state.update_data(server_provider_extra=None)
+        await state.set_state(AdminTicketStates.waiting_server_monthly_cost)
+        await message.answer(
+            "Шаг 5/5. Введите стоимость сервера в месяц в ₽ (или '0' если неизвестно):",
+            reply_markup=admin_back_keyboard(),
+        )
+
+
+@router.message(AdminTicketStates.waiting_server_provider_extra)
+async def admin_server_provider_extra(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        return
+    import json as _json
+
     raw = (message.text or "").strip()
-    provider = None if raw in {"-", "—", "нет"} else raw
-    await state.update_data(server_provider=provider or "")
+    if raw in {"-", "—", "нет", ""}:
+        extra_json = None
+    else:
+        # For yandex_cloud: the extra is billing_account_id
+        data = await state.get_data()
+        provider_type = data.get("server_provider_type", "")
+        if provider_type == "yandex_cloud":
+            extra_json = _json.dumps({"billing_account_id": raw})
+        else:
+            extra_json = raw  # store raw if unknown provider
+
+    await state.update_data(server_provider_extra=extra_json)
     await state.set_state(AdminTicketStates.waiting_server_monthly_cost)
     await message.answer(
         "Шаг 5/5. Введите стоимость сервера в месяц в ₽ (или '0' если неизвестно):",
@@ -513,6 +626,10 @@ async def admin_server_add_cost(message: Message, state: FSMContext, session: As
         ip=data.get("server_ip", ""),
         panel_url=data.get("server_panel_url") or None,
         provider_name=data.get("server_provider") or None,
+        provider_type=data.get("server_provider_type") or "manual",
+        provider_login=data.get("server_provider_login") or None,
+        provider_secret=data.get("server_provider_secret") or None,
+        provider_extra=data.get("server_provider_extra") or None,
         monthly_cost=cost,
         account_balance=Decimal("0"),
         last_status="unknown",

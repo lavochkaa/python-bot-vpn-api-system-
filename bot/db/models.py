@@ -234,3 +234,10 @@ class TrackedServer(Base):
     last_status: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Hosting provider integration
+    provider_type: Mapped[str] = mapped_column(
+        String(32), default="manual", server_default="manual", nullable=False
+    )
+    provider_login: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    provider_secret: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    provider_extra: Mapped[str | None] = mapped_column(Text, nullable=True)

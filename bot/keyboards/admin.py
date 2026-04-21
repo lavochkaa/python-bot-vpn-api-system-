@@ -212,3 +212,15 @@ def admin_server_delete_confirm_keyboard(server_id: int) -> InlineKeyboardMarkup
     builder.button(text="❌ Нет", callback_data=f"admin:server:view:{server_id}")
     builder.adjust(1)
     return builder.as_markup()
+
+
+def admin_server_provider_type_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🌐 Beget", callback_data="admin:server:provider:beget")
+    builder.button(text="☁️ Yandex Cloud", callback_data="admin:server:provider:yandex_cloud")
+    builder.button(text="🔧 FirstByte (вручную)", callback_data="admin:server:provider:firstbyte")
+    builder.button(text="🎮 Play2go (вручную)", callback_data="admin:server:provider:play2go")
+    builder.button(text="✏️ Вручную", callback_data="admin:server:provider:manual")
+    builder.button(text="🔙 Назад", callback_data="admin:menu")
+    builder.adjust(1)
+    return builder.as_markup()
