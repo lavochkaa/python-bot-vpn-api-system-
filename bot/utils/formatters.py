@@ -131,6 +131,7 @@ def _build_main_menu_subscription_block(sub: Subscription, usage_info: dict | No
 
 
 _USAGE_CACHE_TTL_SECONDS = 30.0
+_USAGE_CACHE_MAX_SIZE = 500
 _USAGE_CACHE: dict[tuple[int, str], tuple[float, dict | None]] = {}
 
 
@@ -156,6 +157,17 @@ def _get_cached_usage(user: User, sub: Subscription) -> dict | None:
 
 
 def _store_cached_usage(user: User, sub: Subscription, usage_info: dict | None) -> None:
+    if len(_USAGE_CACHE) >= _USAGE_CACHE_MAX_SIZE:
+        # Evict oldest entries
+        now = time.monotonic()
+        expired = [k for k, (exp, _) in _USAGE_CACHE.items() if exp <= now]
+        for k in expired:
+            _USAGE_CACHE.pop(k, None)
+        # If still over limit, remove oldest by expiry time
+        if len(_USAGE_CACHE) >= _USAGE_CACHE_MAX_SIZE:
+            oldest = sorted(_USAGE_CACHE, key=lambda k: _USAGE_CACHE[k][0])
+            for k in oldest[:len(_USAGE_CACHE) - _USAGE_CACHE_MAX_SIZE + 1]:
+                _USAGE_CACHE.pop(k, None)
     _USAGE_CACHE[_usage_cache_key(user, sub)] = (
         time.monotonic() + _USAGE_CACHE_TTL_SECONDS,
         usage_info,

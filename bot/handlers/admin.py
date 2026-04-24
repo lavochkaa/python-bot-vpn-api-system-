@@ -10,6 +10,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message, MessageEntity
 from sqlalchemy import select
+import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
@@ -460,21 +461,57 @@ async def admin_maintenance_set(call: CallbackQuery, state: FSMContext, session:
         reply_markup=admin_maintenance_keyboard(),
     )
     if enabled and not was_enabled:
+        from sqlalchemy import select as _sa_select
+        from bot.db.models import Subscription as _Sub, VpnKey as _VpnKey
+        from bot.utils.maintenance import get_user_connect_url as _get_url
+
         user_ids = await get_all_user_ids(session)
+        # Batch-load active subscriptions and keys to avoid N+1
+        active_sub_rows = await session.execute(
+            _sa_select(_Sub.user_id).where(_Sub.is_active.is_(True))
+        )
+        users_with_active_sub = {row[0] for row in active_sub_rows}
+        key_rows = await session.execute(
+            _sa_select(_VpnKey.user_id, _VpnKey.key).where(_VpnKey.status == "active")
+        )
+        user_keys: dict[int, str] = {}
+        for uid, key in key_rows:
+            if uid not in user_keys:
+                user_keys[uid] = key
+
+        channel_username = settings.normalized_channel_username.lstrip("@")
         sent_count = 0
-        for user_id in user_ids:
+        for i, user_id in enumerate(user_ids):
             if user_id in settings.admin_id_set:
                 continue
             try:
-                text, kb = await build_maintenance_notice(session, user_id)
+                connect_url = None
+                if user_id in users_with_active_sub:
+                    key = user_keys.get(user_id, "")
+                    if key.startswith(("https://", "http://")):
+                        connect_url = key
+                notice_text = (
+                    "⚙️ <b>Сейчас бот находится на техническом обслуживании.</b>\n\n"
+                    "Следите за новостями в канале."
+                )
+                from aiogram.utils.keyboard import InlineKeyboardBuilder as _IKB
+                kb_builder = _IKB()
+                if connect_url:
+                    safe_url = connect_url.replace("<", "").replace(">", "")
+                    notice_text += "\n\nНо вам всё ещё доступно подключение к VPN."
+                    kb_builder.button(text="🔌 Подключиться", url=safe_url)
+                kb_builder.button(text="📢 Канал", url=f"https://t.me/{channel_username}")
+                kb_builder.adjust(1)
                 await call.bot.send_message(
                     chat_id=user_id,
-                    text=text,
-                    reply_markup=kb,
+                    text=notice_text,
+                    reply_markup=kb_builder.as_markup(),
                 )
                 sent_count += 1
             except TelegramAPIError:
                 continue
+            if (i + 1) % 25 == 0:
+                await asyncio.sleep(1)
         await edit_or_send(
             call.message,
             "🛠 <b>Режим техработ</b>\n\n"
@@ -640,7 +677,7 @@ async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, sessio
     sent_count = 0
     fail_count = 0
 
-    for user_id in user_ids:
+    for i, user_id in enumerate(user_ids):
         try:
             if photo_file_id:
                 kwargs = {
@@ -662,6 +699,9 @@ async def admin_broadcast_publish(call: CallbackQuery, state: FSMContext, sessio
             sent_count += 1
         except TelegramAPIError:
             fail_count += 1
+        # Telegram allows ~30 messages/sec to different users; stay well below
+        if (i + 1) % 25 == 0:
+            await asyncio.sleep(1)
 
     await state.clear()
     await edit_or_send(

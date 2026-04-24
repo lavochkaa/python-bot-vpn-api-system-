@@ -43,7 +43,8 @@ from bot.utils.formatters import (
 
 router = Router()
 logger = logging.getLogger(__name__)
-_subscription_locks: dict[int, asyncio.Lock] = {}
+import weakref
+_subscription_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
 
 DEFAULT_PLAN_TYPE = "pc"
 DEFAULT_PLAN_SLUG = "vpn"
