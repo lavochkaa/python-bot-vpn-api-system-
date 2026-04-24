@@ -137,26 +137,23 @@ class VpnApiClient:
         username: str | None = None,
         uuid: str | None = None,
     ) -> dict[str, Any] | None:
-        direct_user: dict[str, Any] | None = None
+        # Fast path: uuid known → single request, no list scan
         if uuid:
-            for path in (f"/api/users/{uuid}",):
-                try:
-                    direct_user = await self._request("GET", path)
-                    break
-                except ValueError:
-                    continue
+            try:
+                return await self._request("GET", f"/api/users/{uuid}")
+            except ValueError:
+                pass
 
+        # Fallback: search by telegramId / username via list
         users = await self._list_users()
         for user in users:
             if not isinstance(user, dict):
                 continue
-            if uuid and str(user.get("uuid") or "").strip() == uuid:
-                return self._merge_user_payloads(direct_user, user)
             if telegram_id is not None and self._to_int(user.get("telegramId")) == int(telegram_id):
-                return self._merge_user_payloads(direct_user, user)
+                return user
             if username and str(user.get("username") or "").strip() == username:
-                return self._merge_user_payloads(direct_user, user)
-        return direct_user
+                return user
+        return None
 
     async def get_user_usage(self, *, uuid: str | None = None, telegram_id: int | None = None, username: str | None = None) -> dict[str, Any] | None:
         user = await self.find_user(uuid=uuid, telegram_id=telegram_id, username=username)
@@ -167,11 +164,20 @@ class VpnApiClient:
         limit_bytes = self._extract_limit_bytes(user, user_traffic)
         if used_bytes is None and limit_bytes is None:
             return None
+        expire_at = self._parse_datetime(
+            user.get("expireAt")
+            or user.get("expiresAt")
+            or user.get("expire_at")
+            or user_traffic.get("expireAt")
+            or user_traffic.get("expiresAt")
+            or user_traffic.get("expire_at")
+        )
         connected_devices = await self._get_connected_devices(user)
         connected_devices_count = len(connected_devices)
         return {
             "current_usage_gb": self._bytes_to_gb(used_bytes),
             "usage_limit_gb": self._bytes_to_gb(limit_bytes),
+            "expire_at": expire_at,
             "device_limit": self._extract_device_limit(user),
             "last_user_agent": user.get("subLastUserAgent"),
             "connected_devices_count": connected_devices_count,
@@ -378,79 +384,34 @@ class VpnApiClient:
 
     async def _get_connected_devices(self, user: dict[str, Any]) -> list[str]:
         uuid = str(user.get("uuid") or "").strip()
-        user_id = str(user.get("id") or "").strip()
-        if not uuid and not user_id:
+        if not uuid:
             return []
-        device_limit = self._extract_device_limit(user)
 
-        direct_devices = self._extract_connected_devices(
-            user,
-            user_uuid=uuid,
-            user_id=user_id,
-            scoped_payload=self._should_trust_scoped_device_payload(
-                user,
-                trusted_device_limit=device_limit,
-            ),
-        )
-        if direct_devices:
-            return direct_devices
+        # Remnawave: /api/hwid/devices/{uuid} → response.devices[]
+        payload = await self._request_optional_json("GET", f"/api/hwid/devices/{uuid}")
+        if isinstance(payload, dict):
+            inner = payload.get("response", payload)
+            raw_devices = inner.get("devices") if isinstance(inner, dict) else None
+            if isinstance(raw_devices, list):
+                labels: list[str] = []
+                seen: set[str] = set()
+                for d in raw_devices:
+                    if not isinstance(d, dict):
+                        continue
+                    # Build a human-readable label from device fields
+                    model = str(d.get("deviceModel") or "").strip()
+                    platform = str(d.get("platform") or "").strip()
+                    os_ver = str(d.get("osVersion") or "").strip()
+                    label = model or platform
+                    if label and os_ver:
+                        label = f"{label} {os_ver}"
+                    if not label:
+                        label = str(d.get("hwid") or d.get("userAgent") or "").strip()[:24]
+                    if label and label not in seen:
+                        seen.add(label)
+                        labels.append(label)
+                return labels
 
-        attempts: list[tuple[str, dict[str, str] | None, bool]] = []
-        if uuid:
-            attempts.extend(
-                [
-                    (f"/api/hwid/devices/{uuid}", None, True),
-                    ("/api/hwid/devices", {"userUuid": uuid}, False),
-                    ("/api/hwid-devices", {"userUuid": uuid}, False),
-                    ("/api/hwid-devices", {"uuid": uuid}, False),
-                    ("/api/hwid-devices", {"ownerUuid": uuid}, False),
-                    ("/api/hwid-devices/by-user", {"userUuid": uuid}, False),
-                    (f"/api/hwid-devices/by-user/{uuid}", None, True),
-                    (f"/api/users/{uuid}/hwid-devices", None, True),
-                ]
-            )
-        if user_id:
-            attempts.extend(
-                [
-                    ("/api/hwid/devices", {"userId": user_id}, False),
-                    ("/api/hwid-devices", {"userId": user_id}, False),
-                    ("/api/hwid-devices", {"user_id": user_id}, False),
-                    ("/api/hwid-devices", {"ownerId": user_id}, False),
-                    ("/api/hwid-devices/by-user", {"userId": user_id}, False),
-                    (f"/api/hwid-devices/by-user/{user_id}", None, True),
-                    (f"/api/users/{user_id}/hwid-devices", None, True),
-                ]
-            )
-        attempts.extend(
-            [
-                ("/api/hwid/devices", None, False),
-                ("/api/hwid/devices", {"start": "0", "size": "500"}, False),
-                ("/api/hwid/stats", None, False),
-                ("/api/hwid-devices", None, False),
-                ("/api/hwid-devices", {"start": "0", "size": "500"}, False),
-                ("/api/hwid-devices/stats", None, False),
-            ]
-        )
-        deadline = time.monotonic() + max(4.0, min(10.0, float(self.config.timeout_seconds)))
-        for path, params, scoped_payload in attempts:
-            if time.monotonic() >= deadline:
-                logger.warning("VPN API device lookup budget exhausted for uuid=%s user_id=%s", uuid, user_id)
-                break
-            payload = await self._request_optional_json("GET", path, params=params)
-            effective_scoped_payload = scoped_payload
-            if not effective_scoped_payload and params:
-                effective_scoped_payload = self._should_trust_scoped_device_payload(
-                    payload,
-                    trusted_device_limit=device_limit,
-                )
-            devices = self._extract_connected_devices(
-                payload,
-                user_uuid=uuid,
-                user_id=user_id,
-                scoped_payload=effective_scoped_payload,
-            )
-            if devices:
-                return devices
         return []
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
@@ -726,6 +687,29 @@ class VpnApiClient:
         if not candidates:
             return None
 
+        for item in candidates:
+            squad_uuid = self._extract_internal_squad_uuid(item)
+            if not squad_uuid:
+                continue
+            squad_name = str(
+                item.get("name")
+                or item.get("title")
+                or item.get("remark")
+                or item.get("label")
+                or ""
+            ).strip().lower()
+            if squad_name in {"default-squad", "default squad", "default"}:
+                return squad_uuid
+
+        for item in candidates:
+            if any(
+                bool(item.get(key))
+                for key in ("isDefault", "default", "is_default", "defaultSquad", "is_default_squad")
+            ):
+                squad_uuid = self._extract_internal_squad_uuid(item)
+                if squad_uuid:
+                    return squad_uuid
+
         positioned_candidates: list[tuple[int, str]] = []
         for item in candidates:
             squad_uuid = self._extract_internal_squad_uuid(item)
@@ -738,15 +722,6 @@ class VpnApiClient:
         if positioned_candidates:
             positioned_candidates.sort(key=lambda item: item[0])
             return positioned_candidates[0][1]
-
-        for item in candidates:
-            if any(
-                bool(item.get(key))
-                for key in ("isDefault", "default", "is_default", "defaultSquad", "is_default_squad")
-            ):
-                squad_uuid = self._extract_internal_squad_uuid(item)
-                if squad_uuid:
-                    return squad_uuid
 
         for item in candidates:
             squad_uuid = self._extract_internal_squad_uuid(item)
