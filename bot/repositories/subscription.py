@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 from bot.db.models import Subscription
 from bot.repositories.base import BaseRepository
@@ -28,6 +28,12 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             .options(selectinload(Subscription.plan))
         )
         return result.scalar_one_or_none()
+
+    async def count_user_subscriptions(self, user_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count()).where(Subscription.user_id == user_id)
+        )
+        return result.scalar_one()
 
     async def get_all_current_active(self) -> list[Subscription]:
         now = datetime.now(timezone.utc)

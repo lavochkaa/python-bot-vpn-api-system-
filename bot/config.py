@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     bot_token: str = ""
     vpn_channel_id: int | None = None
     vpn_channel_username: str = "@vpn_channel"
+    review_channel_id: int | None = None
+    review_channel_username: str = "@crystal_vpn_review"
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/vpnbot"
     log_level: str = "INFO"
     payment_provider: str = "stub"

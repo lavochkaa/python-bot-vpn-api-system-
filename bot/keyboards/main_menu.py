@@ -12,7 +12,8 @@ def main_menu_keyboard(connect_url: str | None = None) -> InlineKeyboardMarkup:
     builder.button(text="📦 Подписка", callback_data="menu:subscription")
     builder.button(text="ℹ️ Информация", url="https://teletype.in/@crystalvpn_bot/offerta")
     builder.button(text="🆘 Поддержка", callback_data="menu:support")
-    builder.adjust(1, 2, 2)
+    builder.button(text="⭐ Оставить отзыв", callback_data="menu:review")
+    builder.adjust(1, 2, 2, 1)
     return builder.as_markup()
 
 

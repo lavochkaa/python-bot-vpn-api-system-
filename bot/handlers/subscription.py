@@ -35,7 +35,11 @@ from bot.services.promo import PromoService
 from bot.services.subscription import SubscriptionService
 from bot.states.subscription import SubscriptionStates
 from bot.utils.messages import _short_text
-from bot.utils.formatters import invalidate_usage_cache
+from bot.utils.formatters import (
+    format_subscription_for_user,
+    invalidate_usage_cache,
+    resolve_subscription_usage_info,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -411,11 +415,26 @@ async def _build_active_subscription_text(
     user_id: int,
     subscription_uuid: str | None,
 ) -> str:
-    _ = (session, user_id, subscription_uuid, sub)
+    _ = subscription_uuid
+    user = await UserRepository(session).get_by_tg_id(user_id)
+    usage_info = None
+    if user is not None:
+        usage_info = await resolve_subscription_usage_info(
+            user,
+            sub,
+            session,
+            usage_timeout_seconds=3.0,
+        )
+
+    details_text, _, _ = await format_subscription_for_user(
+        sub,
+        show_type=True,
+        usage_info=usage_info,
+    )
     return (
         "📦 <b>У вас уже есть активная подписка</b>\n\n"
-        "Подробная информация теперь показывается на стартовом экране.\n\n"
-        "Здесь вы можете изменить конфигурацию или сбросить трафик."
+        f"{details_text}\n\n"
+        "Ниже вы можете сбросить трафик или вернуться назад."
     )
 
 
@@ -985,3 +1004,17 @@ async def _finish_purchase(
             reply_markup=subscription_activated_keyboard(show_reset_traffic=True),
     )
     await state.clear()
+
+    # Offer a review only on renewals (not the very first activation)
+    existing_count = await SubscriptionRepository(session).count_user_subscriptions(user_id)
+    if existing_count > 1:
+        from aiogram.utils.keyboard import InlineKeyboardBuilder as _IKB
+        review_kb = _IKB()
+        review_kb.button(text="⭐ Оставить отзыв", callback_data="menu:review")
+        review_kb.button(text="Позже", callback_data="menu:main")
+        review_kb.adjust(2)
+        await message.answer(
+            "Вы продлили подписку — как вам сервис?\n"
+            "Оставьте отзыв, это займёт 30 секунд 🙏",
+            reply_markup=review_kb.as_markup(),
+        )

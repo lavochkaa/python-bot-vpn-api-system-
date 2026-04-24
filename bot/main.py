@@ -8,7 +8,7 @@ from bot.config import settings
 from bot.db.base import AsyncSessionFactory
 from bot.middlewares.db import DbSessionMiddleware
 from bot.middlewares.auth import ChannelSubscriptionMiddleware
-from bot.handlers import common, balance, subscription, keys, info, support, admin, admin_servers
+from bot.handlers import common, balance, subscription, keys, info, support, admin, admin_servers, review
 from bot.repositories.plan import PlanRepository
 from bot.services.server_monitor import run_server_monitor
 
@@ -48,6 +48,7 @@ async def main() -> None:
     dp.include_router(support.router)
     dp.include_router(admin.router)
     dp.include_router(admin_servers.router)
+    dp.include_router(review.router)
 
     logger.info("Starting bot polling...")
     monitor_task = asyncio.create_task(run_server_monitor(bot, AsyncSessionFactory))

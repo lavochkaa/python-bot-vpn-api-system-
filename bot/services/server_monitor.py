@@ -24,13 +24,15 @@ logger = logging.getLogger(__name__)
 
 _CHECK_TIMEOUT = 8
 _MONITOR_INTERVAL_SECONDS = 30 * 60  # 30 minutes
+_ALERT_COOLDOWN_SECONDS = 12 * 60 * 60  # 12 hours between alerts per server
+
+# In-memory cooldown: server_id → datetime of last alert sent
+_last_alert_sent: dict[int, datetime] = {}
 
 
-async def _check_server_status(panel_url: str | None, ip: str) -> str:
+async def _check_server_status(ip: str) -> str:
     """Returns 'online' or 'offline' by attempting HTTP connections and TCP fallback."""
     urls_to_try: list[str] = []
-    if panel_url and panel_url.strip():
-        urls_to_try.append(panel_url.strip())
     for scheme in ("https", "http"):
         urls_to_try.append(f"{scheme}://{ip}")
 
@@ -107,15 +109,43 @@ async def _send_alert(bot, server_name: str, balance: Decimal, days: float | Non
             logger.warning("Failed to send alert to admin %s: %s", admin_id, exc)
 
 
-async def _check_one_server(bot, session, server) -> None:
+def _account_key(server) -> tuple | None:
+    """Hashable key identifying the hosting account (mirrors admin_servers logic)."""
+    provider = (server.provider_type or "manual").lower()
+    if provider in ("manual", "firstbyte"):
+        return None
+    if provider == "play2go":
+        key_field = server.provider_secret
+    else:
+        key_field = server.provider_login
+    if not key_field:
+        return None
+    return (provider, key_field)
+
+
+def _account_siblings(server, all_servers: list) -> list:
+    """Return other active servers sharing the same provider account."""
+    key = _account_key(server)
+    if key is None:
+        return []
+    return [
+        s for s in all_servers
+        if s.id != server.id
+        and s.is_active
+        and _account_key(s) == key
+    ]
+
+
+async def _check_one_server(bot, session, server, all_servers: list) -> None:
     """Run full check for a single server: status + provider balance + alert."""
     from bot.repositories.server import ServerRepository
 
     repo = ServerRepository(session)
+    siblings = _account_siblings(server, all_servers)
 
     # 1. HTTP / TCP status check
     try:
-        status = await _check_server_status(server.panel_url, server.ip)
+        status = await _check_server_status(server.ip)
     except Exception as exc:
         logger.warning("Status check failed for server %s (id=%s): %s", server.name, server.id, exc)
         status = "offline"
@@ -123,7 +153,7 @@ async def _check_one_server(bot, session, server) -> None:
     server.last_status = status
     server.last_checked_at = datetime.now(timezone.utc)
 
-    # 2. Hosting provider balance
+    # 2. Hosting provider balance — propagate to all servers on the same account
     client = build_hosting_client(server)
     if client is not None:
         try:
@@ -136,6 +166,15 @@ async def _check_one_server(bot, session, server) -> None:
                     server.id,
                     provider_status.balance,
                 )
+                for sibling in siblings:
+                    sibling.account_balance = provider_status.balance
+                    await repo.save(sibling)
+                    logger.info(
+                        "Server %s (id=%s): balance propagated from account sibling %s",
+                        sibling.name,
+                        sibling.id,
+                        server.name,
+                    )
         except ValueError as exc:
             # e.g. Yandex Cloud not configured
             logger.info("Server %s (id=%s): provider skipped — %s", server.name, server.id, exc)
@@ -146,10 +185,25 @@ async def _check_one_server(bot, session, server) -> None:
 
     await repo.save(server)
 
-    # 3. Alert check
+    # 3. Alert check — use total monthly cost across all servers on the same account
     balance = server.account_balance
-    monthly_cost = server.monthly_cost
-    days = _days_remaining(balance, monthly_cost)
+    total_monthly_cost = server.monthly_cost + sum(s.monthly_cost for s in siblings)
+    days = _days_remaining(balance, total_monthly_cost)
+
+    # If next_payment_date is set and still in the future, server is paid — skip alert
+    now = datetime.now(timezone.utc)
+    if server.next_payment_date is not None:
+        npd = server.next_payment_date
+        if npd.tzinfo is None:
+            npd = npd.replace(tzinfo=timezone.utc)
+        if npd > now:
+            logger.debug(
+                "Server %s (id=%s): alert suppressed (next_payment_date=%s is in the future)",
+                server.name,
+                server.id,
+                npd.date(),
+            )
+            return
 
     should_alert = False
     if days is not None and days <= 2:
@@ -158,14 +212,24 @@ async def _check_one_server(bot, session, server) -> None:
         should_alert = True
 
     if should_alert:
-        logger.warning(
-            "Server %s (id=%s): low balance alert (days_remaining=%s, balance=%s)",
-            server.name,
-            server.id,
-            days,
-            balance,
-        )
-        await _send_alert(bot, server.name, balance, days)
+        last_sent = _last_alert_sent.get(server.id)
+        if last_sent and (now - last_sent).total_seconds() < _ALERT_COOLDOWN_SECONDS:
+            logger.debug(
+                "Server %s (id=%s): alert suppressed (cooldown, last sent %s ago)",
+                server.name,
+                server.id,
+                now - last_sent,
+            )
+        else:
+            logger.warning(
+                "Server %s (id=%s): low balance alert (days_remaining=%s, balance=%s)",
+                server.name,
+                server.id,
+                days,
+                balance,
+            )
+            _last_alert_sent[server.id] = now
+            await _send_alert(bot, server.name, balance, days)
 
 
 async def _run_monitoring_cycle(bot, session_factory) -> None:
@@ -188,15 +252,17 @@ async def _run_monitoring_cycle(bot, session_factory) -> None:
 
     for server in servers:
         async with session_factory() as session:
-            # Reload server in fresh session for each iteration
+            # Reload server and full list in fresh session for each iteration
             from sqlalchemy import select as sa_select
             from bot.db.models import TrackedServer as TS
             result = await session.execute(sa_select(TS).where(TS.id == server.id))
             fresh_server = result.scalar_one_or_none()
             if fresh_server is None:
                 continue
+            all_result = await session.execute(sa_select(TS).where(TS.is_active.is_(True)))
+            all_active = list(all_result.scalars().all())
             try:
-                await _check_one_server(bot, session, fresh_server)
+                await _check_one_server(bot, session, fresh_server, all_active)
                 await session.commit()
             except Exception as exc:
                 logger.error(
