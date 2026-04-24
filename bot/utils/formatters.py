@@ -245,6 +245,39 @@ async def _fetch_subscription_usage_fallback(
             return None
 
 
+async def resolve_subscription_usage_info(
+    user: User,
+    sub: Subscription,
+    session: AsyncSession,
+    *,
+    usage_timeout_seconds: float = 6.0,
+) -> dict | None:
+    usage_info = _get_cached_usage(user, sub)
+    if usage_info is None:
+        provider = build_vpn_provider()
+        try:
+            usage_info = await asyncio.wait_for(
+                provider.get_user_usage(
+                    user_id=user.id,
+                    subscription_uuid=user.subscription_uuid,
+                    provider_subscription_id=sub.provider_subscription_id,
+                ),
+                timeout=usage_timeout_seconds,
+            )
+        except Exception:
+            usage_info = None
+        fallback_usage = await _fetch_subscription_usage_fallback(
+            user,
+            sub,
+            session,
+            timeout_seconds=usage_timeout_seconds,
+        )
+        usage_info = _merge_usage_info(usage_info, fallback_usage)
+        usage_info = _ensure_device_limit(usage_info, user.max_devices)
+        _store_cached_usage(user, sub, usage_info)
+    return usage_info
+
+
 async def format_main_menu(user: User, session: AsyncSession) -> str:
     snapshot = await build_main_menu_snapshot(user, session)
     return snapshot.text
@@ -262,29 +295,12 @@ async def build_main_menu_snapshot(
     sub = await SubscriptionRepository(session).get_active(user.id)
     usage_info: dict | None = None
     if sub and include_live_usage:
-        usage_info = _get_cached_usage(user, sub)
-        if usage_info is None:
-            provider = build_vpn_provider()
-            try:
-                usage_info = await asyncio.wait_for(
-                    provider.get_user_usage(
-                        user_id=user.id,
-                        subscription_uuid=user.subscription_uuid,
-                        provider_subscription_id=sub.provider_subscription_id,
-                    ),
-                    timeout=usage_timeout_seconds,
-                )
-            except Exception:
-                usage_info = None
-            fallback_usage = await _fetch_subscription_usage_fallback(
-                user,
-                sub,
-                session,
-                timeout_seconds=usage_timeout_seconds,
-            )
-            usage_info = _merge_usage_info(usage_info, fallback_usage)
-            usage_info = _ensure_device_limit(usage_info, user.max_devices)
-            _store_cached_usage(user, sub, usage_info)
+        usage_info = await resolve_subscription_usage_info(
+            user,
+            sub,
+            session,
+            usage_timeout_seconds=usage_timeout_seconds,
+        )
     if sub:
         subscription_block, remaining_gb, remaining_days = _build_main_menu_subscription_block(sub, usage_info)
     else:
@@ -326,7 +342,8 @@ async def format_subscription_for_user(
         remaining_text = f"осталось {max(0, remaining_days)} дн."
     else:
         remaining_days = None
-    plan_name = sub.plan.name if sub.plan else f"ID #{sub.plan_id}"
+    plan = sub.__dict__.get("plan")
+    plan_name = plan.name if plan else f"ID #{sub.plan_id}"
     total_gb = float(sub.traffic_gb) if sub.traffic_gb else None
     used_gb = None
     if usage_info:
