@@ -24,7 +24,7 @@ def _rating_keyboard():
     for n in range(1, 6):
         builder.button(text=STARS[n], callback_data=f"review:rate:{n}")
     builder.button(text="🔙 Отмена", callback_data="review:cancel")
-    builder.adjust(5, 1)
+    builder.adjust(1, 1, 1, 1, 1, 1)
     return builder.as_markup()
 
 
