@@ -187,10 +187,10 @@ class VpnApiClient:
 
     async def reset_user_traffic(self, uuid: str) -> bool:
         for method, path in (
+            ("POST", f"/api/users/{uuid}/actions/reset-traffic"),
+            ("POST", f"/users/{uuid}/actions/reset-traffic"),
             ("POST", f"/users/{uuid}/reset-traffic"),
             ("POST", f"/api/users/{uuid}/reset-traffic"),
-            ("POST", f"/users/reset-traffic/{uuid}"),
-            ("POST", f"/api/users/reset-traffic/{uuid}"),
         ):
             try:
                 await self._request(method, path)
