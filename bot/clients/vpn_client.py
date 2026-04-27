@@ -126,7 +126,7 @@ class VpnApiClient:
             payload["activeInternalSquads"] = [internal_squad_uuid]
         return await self._request_with_fallback(
             "POST",
-            ("/users", "/api/users"),
+            ("/api/users",),
             json=payload,
         )
 
@@ -144,7 +144,17 @@ class VpnApiClient:
             except ValueError:
                 pass
 
-        # Fallback: search by telegramId / username via list
+        # Fast path: telegram_id known → dedicated endpoint, no list scan
+        if telegram_id is not None:
+            try:
+                data = await self._request_optional_json("GET", f"/api/users/by-telegram-id/{telegram_id}")
+                user = self._extract_single_user(data)
+                if user:
+                    return user
+            except Exception:
+                pass
+
+        # Fallback: search by username via full list (paginated)
         users = await self._list_users()
         for user in users:
             if not isinstance(user, dict):
@@ -153,6 +163,20 @@ class VpnApiClient:
                 return user
             if username and str(user.get("username") or "").strip() == username:
                 return user
+        return None
+
+    def _extract_single_user(self, data: Any) -> dict[str, Any] | None:
+        """Extract a single user dict from various response shapes."""
+        if isinstance(data, dict):
+            response = data.get("response")
+            if isinstance(response, dict):
+                return response
+            if isinstance(response, list) and response and isinstance(response[0], dict):
+                return response[0]
+            if "uuid" in data:
+                return data
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0]
         return None
 
     async def get_user_usage(self, *, uuid: str | None = None, telegram_id: int | None = None, username: str | None = None) -> dict[str, Any] | None:
@@ -186,18 +210,11 @@ class VpnApiClient:
         }
 
     async def reset_user_traffic(self, uuid: str) -> bool:
-        for method, path in (
-            ("POST", f"/api/users/{uuid}/actions/reset-traffic"),
-            ("POST", f"/users/{uuid}/actions/reset-traffic"),
-            ("POST", f"/users/{uuid}/reset-traffic"),
-            ("POST", f"/api/users/{uuid}/reset-traffic"),
-        ):
-            try:
-                await self._request(method, path)
-                return True
-            except ValueError:
-                continue
-        return False
+        try:
+            await self._request("POST", f"/api/users/{uuid}/actions/reset-traffic")
+            return True
+        except ValueError:
+            return False
 
     def build_subscription_url(self, payload: dict[str, Any]) -> str | None:
         direct = (
@@ -737,7 +754,9 @@ class VpnApiClient:
         return None
 
     async def _list_users(self) -> list[dict[str, Any]]:
-        for path in ("/api/users",):
+        # Fetch all users with a high limit to avoid pagination truncation.
+        # Remnawave default is 25; use 10000 to get everyone.
+        for path in ("/api/users?limit=10000", "/api/users"):
             try:
                 data = await self._request("GET", path)
             except ValueError:
