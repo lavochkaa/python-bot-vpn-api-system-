@@ -1,18 +1,18 @@
 # VPN Telegram Bot
 
-Telegram-бот для продажи VPN-подписок и управления ключами.
+Telegram bot for selling VPN subscriptions and managing keys.
 
-## Стек
+## Stack
 - Python 3.11+, aiogram v3
 - PostgreSQL + SQLAlchemy 2 (async)
-- Alembic для миграций
-- pydantic-settings для конфига
+- Alembic for migrations
+- pydantic-settings for config
 
-## Быстрый запуск на сервере (copy-paste)
+## Quick start on server (copy-paste)
 
-Ниже команды для Ubuntu 22.04/24.04. Выполняй по порядку.
+Commands for Ubuntu 22.04/24.04. Run in order.
 
-### 1) Первый деплой
+### 1) First deploy
 
 ```bash
 sudo apt update
@@ -23,7 +23,7 @@ sudo -u postgres psql -c "CREATE DATABASE vpnbot OWNER vpnbot;" || true
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE vpnbot TO vpnbot;" || true
 
 mkdir -p ~/apps && cd ~/apps
-git clone https://github.com/lavochkaa/vpn-bot-for-roma.git vpn-bot
+git clone https://github.com/lavochkaa/python-bot-vpn-api-system-.git vpn-bot
 cd vpn-bot
 
 python3 -m venv .venv
@@ -32,14 +32,13 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 cp .env.example .env
-echo "Открой .env и заполни BOT_TOKEN + остальные переменные"
-nano .env
+nano .env  # fill in BOT_TOKEN and other variables
 
 alembic upgrade head
 python3 -m bot.main
 ```
 
-### 2) Автозапуск через systemd
+### 2) Auto-start with systemd
 
 ```bash
 sudo tee /etc/systemd/system/vpn-bot.service >/dev/null <<'EOF'
@@ -66,73 +65,72 @@ sudo systemctl start vpn-bot.service
 sudo systemctl status vpn-bot.service --no-pager
 ```
 
-Если сервис не стартовал, смотри логи:
+If the service didn't start, check logs:
 
 ```bash
 journalctl -u vpn-bot.service -n 200 --no-pager
 journalctl -u vpn-bot.service -f
 ```
 
-### 3) Обновление на сервере
+### 3) Update on server
 
 ```bash
 cd ~/apps/vpn-bot
 git pull origin main
 source .venv/bin/activate
 
-
 alembic upgrade head
 sudo systemctl restart vpn-bot.service
 sudo systemctl status vpn-bot.service --no-pager
 ```
 
-## Запуск (dev, PostgreSQL)
+## Dev run (PostgreSQL)
 
 ```bash
 cp .env.example .env
-# Заполни BOT_TOKEN, VPN_CHANNEL_ID/USERNAME, PAYMENT_PROVIDER_TOKEN
+# Fill in BOT_TOKEN, VPN_CHANNEL_ID/USERNAME, PAYMENT_PROVIDER_TOKEN
 pip install -r requirements.txt
 alembic upgrade head
 python3 -m bot.main
 ```
 
-## Запуск через Docker
+## Docker
 
 ```bash
 cp .env.example .env
-# Заполни BOT_TOKEN, VPN_CHANNEL_ID/USERNAME, PAYMENT_PROVIDER_TOKEN в .env
+# Fill in BOT_TOKEN, VPN_CHANNEL_ID/USERNAME, PAYMENT_PROVIDER_TOKEN in .env
 docker-compose up --build
 ```
 
-## Миграции
+## Migrations
 
 ```bash
-alembic revision --autogenerate -m "описание"
+alembic revision --autogenerate -m "description"
 alembic upgrade head
 ```
 
-## Архитектура
+## Architecture
 
 ```
-handlers/     — UI-слой, только aiogram + вызов сервисов
-services/     — бизнес-логика
-repositories/ — CRUD, изолирован от бизнес-логики
-providers/    — внешние интеграции (платежи, VPN-ключи)
-states/       — FSM-состояния
-middlewares/  — DB-сессия, проверка подписки на канал
-models.py     — ORM-модели
+handlers/     — UI layer, aiogram only + service calls
+services/     — business logic
+repositories/ — CRUD, isolated from business logic
+providers/    — external integrations (payments, VPN keys)
+states/       — FSM states
+middlewares/  — DB session, channel subscription check
+models.py     — ORM models
 ```
 
-## Функциональность
+## Features
 
-- ✅ Проверка подписки на канал при /start
-- ✅ Главное меню с балансом и статусом подписки
-- ✅ Пополнение баланса с промокодом
-- ✅ Выбор и смена тарифа (VPN / VPN+обход)
-- ✅ Автовыдача VPN-ключей после оплаты
-- ✅ Просмотр ключей в личном кабинете
-- ✅ Система поддержки с номером тикета
-- ✅ Раздел "в разработке"
+- ✅ Channel subscription check on /start
+- ✅ Main menu with balance and subscription status
+- ✅ Balance top-up with promo code
+- ✅ Plan selection and switching (VPN / VPN+bypass)
+- ✅ Automatic VPN key issuance after payment
+- ✅ Key management in user cabinet
+- ✅ Support system with ticket number
+- ✅ "In development" section
 
 ## VPN API Integration
 
@@ -149,7 +147,7 @@ Expected endpoints:
 - `POST /subscriptions/{id}/extend` -> extend subscription
 - `GET /subscriptions/{id}` -> read subscription
 
-## Частые проблемы
+## Common issues
 
-- Если `docker-compose` не найден: используй `docker compose ...` (без дефиса) или запускай локально без Docker.
-- Если `TelegramConflictError`: запущено несколько экземпляров бота. Заверши все процессы и оставь один.
+- If `docker-compose` not found: use `docker compose ...` (no hyphen) or run locally without Docker.
+- If `TelegramConflictError`: multiple bot instances running. Stop all processes and keep one.
